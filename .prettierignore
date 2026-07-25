@@ -1,0 +1,9 @@
+node_modules/
+.next/
+.playwright-cli/
+output/
+coverage/
+playwright-report/
+test-results/
+public/serwist/
+pnpm-lock.yaml

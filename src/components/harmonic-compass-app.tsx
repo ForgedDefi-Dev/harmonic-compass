@@ -1,0 +1,2205 @@
+"use client";
+
+import {
+  ArrowLeft,
+  ArrowRight,
+  BookOpen,
+  Check,
+  ChevronDown,
+  CircleHelp,
+  Compass,
+  Copy,
+  Drum,
+  Gauge,
+  Guitar,
+  Headphones,
+  Library,
+  ListMusic,
+  Lock,
+  Menu,
+  Mic2,
+  MoreHorizontal,
+  Music2,
+  Pause,
+  Play,
+  Plus,
+  RotateCcw,
+  Search,
+  Settings2,
+  Sparkles,
+  Star,
+  Trash2,
+  Upload,
+  Volume2,
+  WandSparkles,
+  X,
+} from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ChordPreviewPlayer, MicrophoneChordListener, ResponsiveBand } from "@/audio";
+import { formatChord, getSuggestions, SHOWCASE_PROGRESSION } from "@/music";
+import { addVersion, ensureSeeded, getDatabase, saveSong, seedSongIds } from "@/storage";
+import type { AssistanceLevel, ChordSymbol, EmotionalIntent } from "@/types/music";
+
+type Space = "play" | "build" | "grow" | "library";
+type InputMode = "idle" | "listening" | "demo" | "manual";
+
+interface ProgressionChord {
+  id: string;
+  name: string;
+  numeral: string;
+  beats: number;
+  color?: "borrowed";
+}
+
+interface Suggestion {
+  chord: string;
+  numeral: string;
+  bearing: string;
+  purpose: string;
+  detail: string;
+  confidence: number;
+}
+
+const pitchClassByName: Record<string, number> = {
+  C: 0,
+  "C#": 1,
+  Db: 1,
+  D: 2,
+  "D#": 3,
+  Eb: 3,
+  E: 4,
+  F: 5,
+  "F#": 6,
+  Gb: 6,
+  G: 7,
+  "G#": 8,
+  Ab: 8,
+  A: 9,
+  "A#": 10,
+  Bb: 10,
+  B: 11,
+};
+
+function parseChordName(name: string): ChordSymbol {
+  const [symbol, bassName] = name.replaceAll("♭", "b").replaceAll("♯", "#").split("/");
+  const match = /^([A-G](?:#|b)?)(.*)$/.exec(symbol);
+  const root = pitchClassByName[match?.[1] ?? "C"] ?? 0;
+  const suffix = match?.[2] ?? "";
+  let quality: ChordSymbol["quality"] = "major";
+  if (suffix.includes("m7b5") || suffix.includes("dim")) quality = "diminished";
+  else if (suffix.startsWith("maj7")) quality = "major7";
+  else if (suffix.startsWith("m7")) quality = "minor7";
+  else if (suffix.startsWith("m")) quality = "minor";
+  else if (suffix.startsWith("7")) quality = "dominant7";
+  else if (suffix.startsWith("sus2")) quality = "sus2";
+  else if (suffix.startsWith("sus4")) quality = "sus4";
+  const bass = bassName ? pitchClassByName[bassName] : undefined;
+  return { root, quality, ...(bass === undefined ? {} : { bass }) };
+}
+
+function createPreviewPlayer(): ChordPreviewPlayer {
+  return new ChordPreviewPlayer((active) => {
+    window.dispatchEvent(new CustomEvent("harmonic-compass-preview", { detail: active }));
+  });
+}
+
+const demoProgression: ProgressionChord[] = [
+  { id: "c1", name: "C", numeral: "I", beats: 4 },
+  { id: "c2", name: "G", numeral: "V", beats: 4 },
+  { id: "c3", name: "Am", numeral: "vi", beats: 4 },
+  { id: "c4", name: "F", numeral: "IV", beats: 4 },
+  { id: "c5", name: "Fm", numeral: "iv", beats: 4, color: "borrowed" },
+  { id: "c6", name: "C", numeral: "I", beats: 8 },
+];
+
+const chordMap: Record<string, Suggestion[]> = {
+  C: [
+    {
+      chord: "G",
+      numeral: "V",
+      bearing: "TENSION",
+      purpose: "Create momentum",
+      detail: "Strong pull away from home",
+      confidence: 0.94,
+    },
+    {
+      chord: "F",
+      numeral: "IV",
+      bearing: "LIFT",
+      purpose: "Open the sound",
+      detail: "A warm, familiar expansion",
+      confidence: 0.89,
+    },
+    {
+      chord: "Am",
+      numeral: "vi",
+      bearing: "SHADOW",
+      purpose: "Turn inward",
+      detail: "Keeps the notes close, changes the mood",
+      confidence: 0.84,
+    },
+    {
+      chord: "Em",
+      numeral: "iii",
+      bearing: "FLOW",
+      purpose: "Continue gently",
+      detail: "Smoothest voice leading",
+      confidence: 0.72,
+    },
+    {
+      chord: "Fm",
+      numeral: "iv",
+      bearing: "SURPRISE",
+      purpose: "Add a bittersweet turn",
+      detail: "Borrowed from C minor",
+      confidence: 0.63,
+    },
+    {
+      chord: "C",
+      numeral: "I",
+      bearing: "RESOLVE",
+      purpose: "Stay home",
+      detail: "Rest without changing direction",
+      confidence: 0.79,
+    },
+  ],
+  G: [
+    {
+      chord: "C",
+      numeral: "I",
+      bearing: "RESOLVE",
+      purpose: "Come home",
+      detail: "The strongest release",
+      confidence: 0.97,
+    },
+    {
+      chord: "Am",
+      numeral: "vi",
+      bearing: "SHADOW",
+      purpose: "Soften the landing",
+      detail: "A reflective detour",
+      confidence: 0.87,
+    },
+    {
+      chord: "Em",
+      numeral: "iii",
+      bearing: "FLOW",
+      purpose: "Keep moving",
+      detail: "Shared tones make this effortless",
+      confidence: 0.78,
+    },
+    {
+      chord: "F",
+      numeral: "IV",
+      bearing: "LIFT",
+      purpose: "Open up",
+      detail: "Broad and familiar",
+      confidence: 0.74,
+    },
+    {
+      chord: "D7",
+      numeral: "V/V",
+      bearing: "SURPRISE",
+      purpose: "Push brighter",
+      detail: "A secondary dominant",
+      confidence: 0.62,
+    },
+    {
+      chord: "G",
+      numeral: "V",
+      bearing: "TENSION",
+      purpose: "Hold the tension",
+      detail: "Delay the answer",
+      confidence: 0.69,
+    },
+  ],
+  Am: [
+    {
+      chord: "F",
+      numeral: "IV",
+      bearing: "LIFT",
+      purpose: "Find some light",
+      detail: "Opens without losing intimacy",
+      confidence: 0.93,
+    },
+    {
+      chord: "G",
+      numeral: "V",
+      bearing: "FLOW",
+      purpose: "Continue the motion",
+      detail: "A natural step downward",
+      confidence: 0.88,
+    },
+    {
+      chord: "C",
+      numeral: "I",
+      bearing: "RESOLVE",
+      purpose: "Return home",
+      detail: "Warm major release",
+      confidence: 0.86,
+    },
+    {
+      chord: "Dm",
+      numeral: "ii",
+      bearing: "SHADOW",
+      purpose: "Go deeper",
+      detail: "Leans further into minor",
+      confidence: 0.81,
+    },
+    {
+      chord: "E7",
+      numeral: "V/vi",
+      bearing: "TENSION",
+      purpose: "Intensify",
+      detail: "Pulls strongly back to A minor",
+      confidence: 0.75,
+    },
+    {
+      chord: "Fm",
+      numeral: "iv",
+      bearing: "SURPRISE",
+      purpose: "Change the color",
+      detail: "Unexpected chromatic movement",
+      confidence: 0.58,
+    },
+  ],
+  F: [
+    {
+      chord: "C",
+      numeral: "I",
+      bearing: "RESOLVE",
+      purpose: "Come home",
+      detail: "Clear, settled release",
+      confidence: 0.94,
+    },
+    {
+      chord: "G",
+      numeral: "V",
+      bearing: "TENSION",
+      purpose: "Build tension",
+      detail: "Points firmly toward home",
+      confidence: 0.9,
+    },
+    {
+      chord: "Am",
+      numeral: "vi",
+      bearing: "SHADOW",
+      purpose: "Turn inward",
+      detail: "Gentle and connected",
+      confidence: 0.82,
+    },
+    {
+      chord: "Dm",
+      numeral: "ii",
+      bearing: "FLOW",
+      purpose: "Continue softly",
+      detail: "Two shared notes",
+      confidence: 0.77,
+    },
+    {
+      chord: "Fm",
+      numeral: "iv",
+      bearing: "SURPRISE",
+      purpose: "Become bittersweet",
+      detail: "The borrowed minor iv",
+      confidence: 0.71,
+    },
+    {
+      chord: "C/E",
+      numeral: "I⁶",
+      bearing: "LIFT",
+      purpose: "Rise smoothly",
+      detail: "Bass steps upward",
+      confidence: 0.66,
+    },
+  ],
+  Fm: [
+    {
+      chord: "C",
+      numeral: "I",
+      bearing: "RESOLVE",
+      purpose: "Release the ache",
+      detail: "The classic minor iv resolution",
+      confidence: 0.96,
+    },
+    {
+      chord: "G",
+      numeral: "V",
+      bearing: "TENSION",
+      purpose: "Hold the drama",
+      detail: "Delays the homecoming",
+      confidence: 0.83,
+    },
+    {
+      chord: "Ab",
+      numeral: "♭VI",
+      bearing: "SHADOW",
+      purpose: "Go cinematic",
+      detail: "Deepens the borrowed color",
+      confidence: 0.76,
+    },
+    {
+      chord: "Dm7♭5",
+      numeral: "iiø",
+      bearing: "SURPRISE",
+      purpose: "Turn mysterious",
+      detail: "A darker predominant",
+      confidence: 0.61,
+    },
+    {
+      chord: "Am",
+      numeral: "vi",
+      bearing: "FLOW",
+      purpose: "Keep it tender",
+      detail: "Chromatic inner voice",
+      confidence: 0.68,
+    },
+    {
+      chord: "F",
+      numeral: "IV",
+      bearing: "LIFT",
+      purpose: "Brighten again",
+      detail: "Restore the major color",
+      confidence: 0.79,
+    },
+  ],
+};
+
+const defaultSuggestions = chordMap.C;
+
+const emotionalIntents: { id: EmotionalIntent; label: string; icon: string }[] = [
+  { id: "hopeful", label: "More hopeful", icon: "↗" },
+  { id: "intimate", label: "More intimate", icon: "○" },
+  { id: "energetic", label: "More energy", icon: "⌁" },
+  { id: "tense", label: "More tense", icon: "△" },
+  { id: "mysterious", label: "Mysterious", icon: "◇" },
+  { id: "melancholic", label: "Melancholic", icon: "↓" },
+  { id: "triumphant", label: "Triumphant", icon: "↑" },
+  { id: "unresolved", label: "Unresolved", icon: "…" },
+  { id: "home", label: "Back home", icon: "⌂" },
+  { id: "surprise", label: "Surprise me", icon: "✦" },
+];
+
+const routes: Record<EmotionalIntent, { label: string; note: string; chords: string[] }[]> = {
+  hopeful: [
+    { label: "Direct", note: "Clear and warm", chords: ["C", "F", "G", "C"] },
+    { label: "Build", note: "Earn the lift", chords: ["Am", "F", "Dm", "G"] },
+    { label: "Twist", note: "Light after shadow", chords: ["F", "Fm", "C"] },
+  ],
+  intimate: [
+    { label: "Direct", note: "Keep it close", chords: ["Am", "Em", "F"] },
+    { label: "Build", note: "Quiet descent", chords: ["C", "G/B", "Am", "F"] },
+    { label: "Twist", note: "Soft borrowed color", chords: ["Dm", "Fm", "C"] },
+  ],
+  energetic: [
+    { label: "Direct", note: "Forward motion", chords: ["C", "G", "Am", "F"] },
+    { label: "Build", note: "Bigger push", chords: ["Am", "F", "C", "G"] },
+    { label: "Twist", note: "Bright dominant", chords: ["C", "E7", "Am", "G"] },
+  ],
+  tense: [
+    { label: "Direct", note: "Hold the pull", chords: ["C", "Dm", "G"] },
+    { label: "Build", note: "Climb gradually", chords: ["F", "Dm", "D7", "G"] },
+    { label: "Twist", note: "Chromatic pressure", chords: ["C", "Fm", "G"] },
+  ],
+  mysterious: [
+    { label: "Direct", note: "Dark color", chords: ["C", "Fm", "Ab"] },
+    { label: "Build", note: "Avoid home", chords: ["Am", "Dm", "Fm"] },
+    { label: "Twist", note: "A cinematic door", chords: ["C", "Eb", "Fm"] },
+  ],
+  melancholic: [
+    { label: "Direct", note: "Gentle ache", chords: ["C", "Am", "F"] },
+    { label: "Build", note: "Longer descent", chords: ["C", "G/B", "Am", "Em"] },
+    { label: "Twist", note: "Bittersweet", chords: ["F", "Fm", "C"] },
+  ],
+  triumphant: [
+    { label: "Direct", note: "Open arrival", chords: ["Am", "F", "G", "C"] },
+    { label: "Build", note: "Stronger rise", chords: ["Am", "Dm", "G", "C"] },
+    { label: "Twist", note: "Dramatic turn", chords: ["Am", "E7", "F", "G"] },
+  ],
+  unresolved: [
+    { label: "Direct", note: "End on the question", chords: ["C", "F", "G"] },
+    { label: "Build", note: "Suspended", chords: ["Am", "F", "Gsus4"] },
+    { label: "Twist", note: "Leave the door open", chords: ["C", "Fm", "G"] },
+  ],
+  home: [
+    { label: "Direct", note: "Strongest return", chords: ["G", "C"] },
+    { label: "Build", note: "Prepare the landing", chords: ["Dm", "G", "C"] },
+    { label: "Twist", note: "Bittersweet return", chords: ["F", "Fm", "C"] },
+  ],
+  surprise: [
+    { label: "Direct", note: "Borrow the shadow", chords: ["C", "Fm", "C"] },
+    { label: "Build", note: "Side-step", chords: ["C", "E7", "Am"] },
+    { label: "Twist", note: "Open a new world", chords: ["C", "Eb", "Ab"] },
+  ],
+};
+
+const navItems: { id: Space; label: string; icon: typeof Compass }[] = [
+  { id: "play", label: "Play", icon: Compass },
+  { id: "build", label: "Build", icon: ListMusic },
+  { id: "grow", label: "Grow", icon: BookOpen },
+  { id: "library", label: "Library", icon: Library },
+];
+
+function BrandMark({ compact = false }: { compact?: boolean }) {
+  return (
+    <div
+      className={`brand-lockup ${compact ? "brand-lockup--compact" : ""}`}
+      role="img"
+      aria-label="Harmonic Compass"
+    >
+      <span className="brand-mark" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </span>
+      {!compact && (
+        <span className="brand-name">
+          Harmonic <strong>Compass</strong>
+        </span>
+      )}
+    </div>
+  );
+}
+
+function Onboarding({ onListen, onDemo }: { onListen: () => void; onDemo: () => void }) {
+  return (
+    <main className="entry-screen">
+      <header className="entry-header">
+        <BrandMark />
+        <button className="text-button" onClick={onDemo}>
+          Explore the demo <ArrowRight size={15} />
+        </button>
+      </header>
+      <section className="entry-hero" aria-labelledby="entry-heading">
+        <div className="entry-signal" aria-hidden="true">
+          <div className="entry-signal__orbit entry-signal__orbit--outer" />
+          <div className="entry-signal__orbit entry-signal__orbit--inner" />
+          <div className="entry-signal__needle" />
+          <div className="entry-signal__core">
+            <Guitar size={42} strokeWidth={1.35} />
+          </div>
+          {["RESOLVE", "LIFT", "TENSION", "SHADOW", "SURPRISE", "FLOW"].map((label, i) => (
+            <span key={label} className={`entry-signal__label entry-signal__label--${i + 1}`}>
+              {label}
+            </span>
+          ))}
+        </div>
+        <div className="entry-copy">
+          <p className="eyebrow">A musical navigation system for guitarists</p>
+          <h1 id="entry-heading">
+            Never feel lost
+            <br />
+            after playing a chord.
+          </h1>
+          <p className="entry-description">
+            Start playing. We’ll hear the harmony, map where it can go, and keep your idea moving
+            while you remain the musician.
+          </p>
+          <div className="entry-actions">
+            <button className="primary-button primary-button--large" onClick={onListen}>
+              <Mic2 size={19} /> Start listening
+            </button>
+            <button className="secondary-button secondary-button--large" onClick={onDemo}>
+              <Play size={18} fill="currentColor" /> Play guided showcase
+            </button>
+          </div>
+          <p className="privacy-note">
+            <Lock size={12} /> Your audio stays on this device
+          </p>
+        </div>
+      </section>
+      <footer className="entry-footer">
+        <span>Play</span>
+        <i />
+        <span>Recognize</span>
+        <i />
+        <span>Navigate</span>
+        <i />
+        <span>Create</span>
+      </footer>
+    </main>
+  );
+}
+
+function AppNavigation({
+  activeSpace,
+  setActiveSpace,
+  mobileOpen,
+  setMobileOpen,
+}: {
+  activeSpace: Space;
+  setActiveSpace: (space: Space) => void;
+  mobileOpen: boolean;
+  setMobileOpen: (value: boolean) => void;
+}) {
+  return (
+    <>
+      <aside className={`app-rail ${mobileOpen ? "app-rail--open" : ""}`}>
+        <div className="rail-brand">
+          <BrandMark compact />
+        </div>
+        <nav className="rail-nav" aria-label="Primary navigation">
+          {navItems.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              className={`rail-nav__item ${activeSpace === id ? "is-active" : ""}`}
+              aria-current={activeSpace === id ? "page" : undefined}
+              onClick={() => {
+                setActiveSpace(id);
+                setMobileOpen(false);
+              }}
+            >
+              <Icon size={21} strokeWidth={activeSpace === id ? 2.2 : 1.6} />
+              <span>{label}</span>
+            </button>
+          ))}
+        </nav>
+        <button className="rail-settings" aria-label="Open settings">
+          <Settings2 size={20} />
+        </button>
+      </aside>
+      <nav className="mobile-nav" aria-label="Primary navigation">
+        {navItems.map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            className={activeSpace === id ? "is-active" : ""}
+            aria-current={activeSpace === id ? "page" : undefined}
+            onClick={() => setActiveSpace(id)}
+          >
+            <Icon size={20} />
+            <span>{label}</span>
+          </button>
+        ))}
+      </nav>
+    </>
+  );
+}
+
+function WorkspaceHeader({
+  title,
+  subtitle,
+  onMenu,
+  onMentor,
+}: {
+  title: string;
+  subtitle?: string;
+  onMenu: () => void;
+  onMentor: () => void;
+}) {
+  return (
+    <header className="workspace-header">
+      <button
+        className="icon-button workspace-header__menu"
+        onClick={onMenu}
+        aria-label="Open menu"
+      >
+        <Menu size={21} />
+      </button>
+      <div className="workspace-title">
+        <span>{title}</span>
+        {subtitle && <small>{subtitle}</small>}
+      </div>
+      <div className="workspace-header__actions">
+        <button className="mentor-button" onClick={onMentor}>
+          <Sparkles size={16} />
+          <span>Ask Compass</span>
+        </button>
+        <button className="avatar-button" aria-label="Open player profile">
+          T
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function ChordDiagram({ chord }: { chord: string }) {
+  const patterns: Record<string, number[]> = {
+    C: [-1, 3, 2, 0, 1, 0],
+    G: [3, 2, 0, 0, 0, 3],
+    Am: [-1, 0, 2, 2, 1, 0],
+    F: [1, 3, 3, 2, 1, 1],
+    Fm: [1, 3, 3, 1, 1, 1],
+    Em: [0, 2, 2, 0, 0, 0],
+  };
+  const frets = patterns[chord.replace(/\/.*$/, "")] ?? [0, 2, 2, 1, 0, 0];
+  return (
+    <div className="chord-diagram" aria-label={`${chord} guitar chord diagram`}>
+      <div className="chord-diagram__nut" />
+      {frets.map((fret, string) => (
+        <div key={string} className="chord-diagram__string">
+          <span className="chord-diagram__status">{fret < 0 ? "×" : fret === 0 ? "○" : ""}</span>
+          {fret > 0 && <i style={{ top: `${8 + (Math.min(fret, 4) - 1) * 17}px` }} />}
+        </div>
+      ))}
+      {[1, 2, 3, 4].map((fret) => (
+        <div key={fret} className="chord-diagram__fret" style={{ top: `${22 + fret * 17}px` }} />
+      ))}
+    </div>
+  );
+}
+
+function CompassNode({
+  suggestion,
+  index,
+  selected,
+  onSelect,
+  assistance,
+}: {
+  suggestion: Suggestion;
+  index: number;
+  selected: boolean;
+  onSelect: () => void;
+  assistance: AssistanceLevel;
+}) {
+  return (
+    <button
+      className={`compass-node compass-node--${index + 1} ${selected ? "is-selected" : ""}`}
+      onClick={onSelect}
+      aria-label={`${suggestion.chord}: ${suggestion.purpose}`}
+      aria-pressed={selected}
+    >
+      <span className="compass-node__bearing">{suggestion.bearing}</span>
+      <span className="compass-node__chord">{suggestion.chord}</span>
+      {assistance !== "beginner" && (
+        <span className="compass-node__numeral">{suggestion.numeral}</span>
+      )}
+      <span className="compass-node__purpose">{suggestion.purpose}</span>
+      <span className="compass-node__signal" style={{ width: `${suggestion.confidence * 100}%` }} />
+    </button>
+  );
+}
+
+function HarmonicCompass({
+  currentChord,
+  inputMode,
+  suggestions,
+  selectedSuggestion,
+  setSelectedSuggestion,
+  assistance,
+}: {
+  currentChord: ProgressionChord;
+  inputMode: InputMode;
+  suggestions: Suggestion[];
+  selectedSuggestion: number | null;
+  setSelectedSuggestion: (index: number | null) => void;
+  assistance: AssistanceLevel;
+}) {
+  const activeSuggestion = selectedSuggestion === null ? null : suggestions[selectedSuggestion];
+  const previewRef = useRef<ChordPreviewPlayer | null>(null);
+  useEffect(
+    () => () => {
+      void previewRef.current?.stop();
+    },
+    [],
+  );
+  const previewChord = async () => {
+    if (!activeSuggestion) return;
+    previewRef.current ??= createPreviewPlayer();
+    await previewRef.current.preview(parseChordName(activeSuggestion.chord));
+  };
+  return (
+    <div className="compass-stage">
+      <div className="compass-stage__axis" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+      </div>
+      <div className="compass-orbit compass-orbit--outer" aria-hidden="true" />
+      <div className="compass-orbit compass-orbit--inner" aria-hidden="true" />
+      <div className="compass-route-lines" aria-hidden="true">
+        {suggestions.map((suggestion, index) => (
+          <span
+            key={`${suggestion.chord}-${index}`}
+            className={`compass-route compass-route--${index + 1} ${selectedSuggestion === index ? "is-active" : ""} ${
+              suggestion.bearing === "SURPRISE" ? "is-borrowed" : ""
+            }`}
+          />
+        ))}
+      </div>
+      {suggestions.map((suggestion, index) => (
+        <CompassNode
+          key={`${suggestion.chord}-${index}`}
+          suggestion={suggestion}
+          index={index}
+          selected={selectedSuggestion === index}
+          onSelect={() => setSelectedSuggestion(selectedSuggestion === index ? null : index)}
+          assistance={assistance}
+        />
+      ))}
+      <div className={`current-chord ${inputMode !== "idle" ? "is-live" : ""}`}>
+        <span className="current-chord__status">
+          <i />
+          {inputMode === "demo"
+            ? "DEMO SIGNAL"
+            : inputMode === "manual"
+              ? "MANUAL INPUT"
+              : inputMode === "listening"
+                ? "LISTENING"
+                : "PAUSED"}
+        </span>
+        <strong>{currentChord.name}</strong>
+        {assistance !== "beginner" && <em>{currentChord.numeral} · TONIC</em>}
+        <div className="current-chord__meter" aria-label="Recognition confidence 96%">
+          <span style={{ width: "96%" }} />
+        </div>
+        <small>96% confident</small>
+      </div>
+      {activeSuggestion && (
+        <div className="suggestion-inspector" role="status">
+          <div className="suggestion-inspector__diagram">
+            <ChordDiagram chord={activeSuggestion.chord} />
+          </div>
+          <div>
+            <span>{activeSuggestion.bearing}</span>
+            <strong>
+              {activeSuggestion.chord} <small>{activeSuggestion.numeral}</small>
+            </strong>
+            <p>{activeSuggestion.detail}</p>
+          </div>
+          <button className="preview-button" onClick={() => void previewChord()}>
+            <Volume2 size={16} /> Preview
+          </button>
+          <button
+            className="icon-button suggestion-inspector__close"
+            aria-label="Close chord detail"
+            onClick={() => setSelectedSuggestion(null)}
+          >
+            <X size={17} />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SessionControls({
+  inputMode,
+  setInputMode,
+  assistance,
+  setAssistance,
+  currentChord,
+  setCurrentChordName,
+}: {
+  inputMode: InputMode;
+  setInputMode: (mode: InputMode) => void;
+  assistance: AssistanceLevel;
+  setAssistance: (level: AssistanceLevel) => void;
+  currentChord: ProgressionChord;
+  setCurrentChordName: (name: string) => void;
+}) {
+  const [manualOpen, setManualOpen] = useState(false);
+  return (
+    <div className="session-controls">
+      <div className="signal-control">
+        <button
+          className={`signal-control__button ${inputMode !== "idle" ? "is-active" : ""}`}
+          onClick={() => setInputMode(inputMode === "idle" ? "listening" : "idle")}
+        >
+          {inputMode === "idle" ? <Mic2 size={17} /> : <Pause size={17} />}
+          {inputMode === "idle" ? "Start listening" : "Pause"}
+        </button>
+        <span
+          className={`signal-control__level ${inputMode !== "idle" ? "is-active" : ""}`}
+          aria-hidden="true"
+        >
+          {[22, 42, 67, 90, 58, 35, 72, 48].map((height, index) => (
+            <i key={index} style={{ height: `${height}%` }} />
+          ))}
+        </span>
+      </div>
+      <div className="mode-switch" aria-label="Input mode">
+        <button
+          className={inputMode === "demo" ? "is-active" : ""}
+          onClick={() => setInputMode("demo")}
+        >
+          Demo
+        </button>
+        <button
+          className={inputMode === "manual" ? "is-active" : ""}
+          onClick={() => {
+            setInputMode("manual");
+            setManualOpen(!manualOpen);
+          }}
+        >
+          Manual
+        </button>
+      </div>
+      {manualOpen && (
+        <div className="manual-chord-picker">
+          <span>Choose a chord</span>
+          <div>
+            {["C", "Dm", "Em", "F", "G", "Am", "Fm", "E7"].map((chord) => (
+              <button
+                key={chord}
+                className={currentChord.name === chord ? "is-active" : ""}
+                onClick={() => {
+                  setCurrentChordName(chord);
+                  setInputMode("manual");
+                  setManualOpen(false);
+                }}
+              >
+                {chord}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      <label className="assistance-select">
+        <span>VIEW</span>
+        <select
+          value={assistance}
+          onChange={(event) => setAssistance(event.target.value as AssistanceLevel)}
+        >
+          <option value="beginner">Beginner</option>
+          <option value="developing">Developing</option>
+          <option value="advanced">Advanced</option>
+        </select>
+        <ChevronDown size={14} aria-hidden="true" />
+      </label>
+    </div>
+  );
+}
+
+function EmotionalTray({
+  selectedIntent,
+  setSelectedIntent,
+}: {
+  selectedIntent: EmotionalIntent | null;
+  setSelectedIntent: (intent: EmotionalIntent | null) => void;
+}) {
+  const previewRef = useRef<ChordPreviewPlayer | null>(null);
+  useEffect(
+    () => () => {
+      void previewRef.current?.stop();
+    },
+    [],
+  );
+  const previewRoute = async (chords: string[]) => {
+    previewRef.current ??= createPreviewPlayer();
+    await previewRef.current.previewRoute(chords.map(parseChordName), 96);
+  };
+  return (
+    <section
+      className={`emotion-tray ${selectedIntent ? "is-expanded" : ""}`}
+      aria-labelledby="emotion-heading"
+    >
+      <div className="emotion-tray__header">
+        <div>
+          <span className="section-kicker">NAVIGATE BY FEELING</span>
+          <h2 id="emotion-heading">Where do you want the music to go?</h2>
+        </div>
+        {selectedIntent && (
+          <button className="text-button" onClick={() => setSelectedIntent(null)}>
+            Clear route <X size={14} />
+          </button>
+        )}
+      </div>
+      <div className="emotion-list">
+        {emotionalIntents.map((intent) => (
+          <button
+            key={intent.id}
+            className={selectedIntent === intent.id ? "is-active" : ""}
+            onClick={() => setSelectedIntent(selectedIntent === intent.id ? null : intent.id)}
+            aria-pressed={selectedIntent === intent.id}
+          >
+            <span>{intent.icon}</span>
+            {intent.label}
+          </button>
+        ))}
+      </div>
+      {selectedIntent && (
+        <div className="route-options">
+          {routes[selectedIntent].map((route, routeIndex) => (
+            <article key={route.label} className="route-option">
+              <div className="route-option__meta">
+                <span>0{routeIndex + 1}</span>
+                <div>
+                  <strong>{route.label}</strong>
+                  <small>{route.note}</small>
+                </div>
+              </div>
+              <div className="route-option__chords">
+                {route.chords.map((chord, index) => (
+                  <span key={`${chord}-${index}`}>
+                    {chord}
+                    {index < route.chords.length - 1 && <ArrowRight size={12} />}
+                  </span>
+                ))}
+              </div>
+              <button
+                className="icon-button"
+                aria-label={`Preview ${route.label} route`}
+                onClick={() => void previewRoute(route.chords)}
+              >
+                <Play size={15} fill="currentColor" />
+              </button>
+              <button className="route-option__pin">Pin route</button>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function TakeRibbon({
+  progression,
+  activeIndex,
+  isPlaying,
+  setIsPlaying,
+  setActiveIndex,
+  onOpenBuild,
+}: {
+  progression: ProgressionChord[];
+  activeIndex: number;
+  isPlaying: boolean;
+  setIsPlaying: (value: boolean) => void;
+  setActiveIndex: (index: number) => void;
+  onOpenBuild: () => void;
+}) {
+  return (
+    <section className="take-ribbon" aria-label="Captured progression">
+      <div className="take-ribbon__heading">
+        <div>
+          <span className="section-kicker">LIVE TAKE · 01:12</span>
+          <strong>Your idea</strong>
+        </div>
+        <div className="take-ribbon__transport">
+          <button
+            className="icon-button"
+            aria-label="Restart take"
+            onClick={() => setActiveIndex(0)}
+          >
+            <RotateCcw size={15} />
+          </button>
+          <button
+            className="transport-button"
+            aria-label={isPlaying ? "Pause take" : "Play take"}
+            onClick={() => setIsPlaying(!isPlaying)}
+          >
+            {isPlaying ? (
+              <Pause size={16} fill="currentColor" />
+            ) : (
+              <Play size={16} fill="currentColor" />
+            )}
+          </button>
+        </div>
+      </div>
+      <div className="take-ribbon__timeline">
+        <div className="take-ribbon__track">
+          {progression.map((chord, index) => (
+            <button
+              key={chord.id}
+              className={`${activeIndex === index ? "is-active" : ""} ${chord.color === "borrowed" ? "is-borrowed" : ""}`}
+              onClick={() => setActiveIndex(index)}
+            >
+              <span>{chord.numeral}</span>
+              <strong>{chord.name}</strong>
+              <small>{chord.beats} beats</small>
+            </button>
+          ))}
+          <button className="take-ribbon__add" aria-label="Add chord">
+            <Plus size={18} />
+          </button>
+        </div>
+        <div className="timeline-ticks" aria-hidden="true">
+          {Array.from({ length: 24 }).map((_, index) => (
+            <i key={index} />
+          ))}
+        </div>
+      </div>
+      <button className="take-ribbon__build" onClick={onOpenBuild}>
+        Open in Build <ArrowRight size={15} />
+      </button>
+    </section>
+  );
+}
+
+function BandControl() {
+  const [enabled, setEnabled] = useState(false);
+  const [density, setDensity] = useState<1 | 2 | 3>(2);
+  const bandRef = useRef<ResponsiveBand | null>(null);
+
+  useEffect(
+    () => () => {
+      void bandRef.current?.stop();
+    },
+    [],
+  );
+
+  const startBand = async (nextDensity: 1 | 2 | 3) => {
+    const band = bandRef.current ?? new ResponsiveBand();
+    bandRef.current = band;
+    await band.start({
+      bpm: 96,
+      style: "open-road",
+      density: nextDensity,
+      progression: SHOWCASE_PROGRESSION,
+    });
+  };
+
+  const toggleBand = async () => {
+    if (enabled) {
+      setEnabled(false);
+      await bandRef.current?.stop();
+      return;
+    }
+    try {
+      await startBand(density);
+      setEnabled(true);
+    } catch {
+      setEnabled(false);
+    }
+  };
+
+  const changeDensity = async (value: 1 | 2 | 3) => {
+    setDensity(value);
+    if (enabled) await startBand(value);
+  };
+
+  return (
+    <div className={`band-control ${enabled ? "is-enabled" : ""}`}>
+      <div className="band-control__title">
+        <span className="band-icon">
+          <Drum size={17} />
+        </span>
+        <div>
+          <strong>Responsive band</strong>
+          <small>{enabled ? "Open Road · Following you" : "Off · Follows your timing"}</small>
+        </div>
+      </div>
+      {enabled && (
+        <div className="band-density" aria-label="Band density">
+          {([1, 2, 3] as const).map((value) => (
+            <button
+              key={value}
+              className={density === value ? "is-active" : ""}
+              onClick={() => void changeDensity(value)}
+            >
+              {value === 1 ? "Light" : value === 2 ? "Full" : "Wide"}
+            </button>
+          ))}
+        </div>
+      )}
+      <button
+        className={`toggle ${enabled ? "is-on" : ""}`}
+        onClick={() => void toggleBand()}
+        aria-label={`Turn responsive band ${enabled ? "off" : "on"}`}
+        aria-pressed={enabled}
+      >
+        <span />
+        <em>{enabled ? "On" : "Off"}</em>
+      </button>
+    </div>
+  );
+}
+
+function PlaySpace({
+  inputMode,
+  setInputMode,
+  onMentor,
+  onOpenBuild,
+  liveChord,
+}: {
+  inputMode: InputMode;
+  setInputMode: (mode: InputMode) => void;
+  onMentor: () => void;
+  onOpenBuild: () => void;
+  liveChord: string | null;
+}) {
+  const [assistance, setAssistance] = useState<AssistanceLevel>("developing");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [manualChord, setManualChord] = useState<string | null>(null);
+  const [selectedSuggestion, setSelectedSuggestion] = useState<number | null>(null);
+  const [selectedIntent, setSelectedIntent] = useState<EmotionalIntent | null>(null);
+  const [isPlaying, setIsPlaying] = useState(inputMode === "demo");
+  const [capturedProgression, setCapturedProgression] = useState<ProgressionChord[]>(
+    inputMode === "demo" ? demoProgression : [],
+  );
+  const currentChord = manualChord
+    ? { id: "manual", name: manualChord, numeral: manualChord.endsWith("m") ? "ii" : "I", beats: 4 }
+    : inputMode === "listening" && liveChord
+      ? { id: "live", name: liveChord, numeral: liveChord.endsWith("m") ? "vi" : "I", beats: 4 }
+      : demoProgression[activeIndex];
+  const suggestions = chordMap[currentChord.name] ?? defaultSuggestions;
+
+  useEffect(() => {
+    if (inputMode !== "listening" || !liveChord) return;
+    const timer = window.setTimeout(() => {
+      setCapturedProgression((current) => {
+        if (current.at(-1)?.name === liveChord) return current;
+        return [
+          ...current,
+          {
+            id: crypto.randomUUID(),
+            name: liveChord,
+            numeral: liveChord.endsWith("m") ? "vi" : "I",
+            beats: 4,
+          },
+        ];
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [inputMode, liveChord]);
+
+  useEffect(() => {
+    if (inputMode !== "demo" || !isPlaying) return;
+    const timer = window.setInterval(() => {
+      setActiveIndex((index) => (index + 1) % demoProgression.length);
+      setSelectedSuggestion(null);
+    }, 2200);
+    return () => window.clearInterval(timer);
+  }, [inputMode, isPlaying]);
+
+  return (
+    <div className="play-space">
+      <WorkspaceHeader
+        title="Play"
+        subtitle="Idea 07 · autosaved"
+        onMenu={() => undefined}
+        onMentor={onMentor}
+      />
+      <div className="play-statusbar">
+        <div className="key-status">
+          <span>LIKELY KEY</span>
+          <strong>C major</strong>
+          <em>87%</em>
+        </div>
+        <div className="tempo-status">
+          <Gauge size={15} />
+          <strong>96</strong>
+          <span>BPM</span>
+          <i />
+          <span>4/4</span>
+        </div>
+        <div className="session-status">
+          <span className="live-dot" />
+          {inputMode === "demo"
+            ? "Guided showcase"
+            : inputMode === "manual"
+              ? "Manual mode"
+              : "Live session"}
+        </div>
+      </div>
+      <SessionControls
+        inputMode={inputMode}
+        setInputMode={(mode) => {
+          if (mode !== "manual") setManualChord(null);
+          if (mode === "demo" && capturedProgression.length === 0) {
+            setCapturedProgression(demoProgression);
+          }
+          setInputMode(mode);
+        }}
+        assistance={assistance}
+        setAssistance={setAssistance}
+        currentChord={currentChord}
+        setCurrentChordName={(name) => {
+          setManualChord(name);
+          setSelectedSuggestion(null);
+          setCapturedProgression((current) =>
+            current.at(-1)?.name === name
+              ? current
+              : [
+                  ...current,
+                  {
+                    id: crypto.randomUUID(),
+                    name,
+                    numeral: name.endsWith("m") ? "vi" : "I",
+                    beats: 4,
+                  },
+                ],
+          );
+        }}
+      />
+      <main className="play-workspace">
+        <section className="compass-panel" aria-label="Harmonic Compass">
+          <div className="compass-panel__intro">
+            <span className="section-kicker">HARMONIC COMPASS</span>
+            <p>Choose a destination or keep playing. The map moves with you.</p>
+          </div>
+          <HarmonicCompass
+            currentChord={currentChord}
+            inputMode={inputMode}
+            suggestions={suggestions}
+            selectedSuggestion={selectedSuggestion}
+            setSelectedSuggestion={setSelectedSuggestion}
+            assistance={assistance}
+          />
+          <div className="compass-legend">
+            <span>
+              <i className="is-natural" /> Natural
+            </span>
+            <span>
+              <i className="is-adventurous" /> Adventurous
+            </span>
+            <span>
+              <i className="is-borrowed" /> Borrowed
+            </span>
+          </div>
+        </section>
+        <aside className="play-sidebar">
+          <EmotionalTray selectedIntent={selectedIntent} setSelectedIntent={setSelectedIntent} />
+          <BandControl />
+          <button
+            className="context-insight"
+            onClick={onMentor}
+            aria-label="Ask Compass about the borrowed chord"
+          >
+            <span>
+              <WandSparkles size={16} />
+            </span>
+            <div>
+              <strong>You just borrowed a chord.</strong>
+              <p>Fm came from C minor, adding a bittersweet pull before home.</p>
+            </div>
+            <ArrowRight size={16} />
+          </button>
+        </aside>
+      </main>
+      <TakeRibbon
+        progression={capturedProgression}
+        activeIndex={activeIndex}
+        isPlaying={isPlaying}
+        setIsPlaying={setIsPlaying}
+        setActiveIndex={(index) => {
+          setActiveIndex(index);
+          setManualChord(null);
+        }}
+        onOpenBuild={onOpenBuild}
+      />
+    </div>
+  );
+}
+
+interface BuildSection {
+  id: string;
+  name: string;
+  color: string;
+  chords: ProgressionChord[];
+}
+
+const buildSections: BuildSection[] = [
+  { id: "verse", name: "Verse", color: "sage", chords: demoProgression.slice(0, 4) },
+  {
+    id: "chorus",
+    name: "Chorus",
+    color: "gold",
+    chords: [
+      { id: "b1", name: "F", numeral: "IV", beats: 4 },
+      { id: "b2", name: "G", numeral: "V", beats: 4 },
+      { id: "b3", name: "C", numeral: "I", beats: 4 },
+      { id: "b4", name: "Am", numeral: "vi", beats: 4 },
+    ],
+  },
+  { id: "bridge", name: "Bridge", color: "blue", chords: demoProgression.slice(3) },
+];
+
+function BuildSpace({ onMentor }: { onMentor: () => void }) {
+  const [activeSection, setActiveSection] = useState(0);
+  const [variation, setVariation] = useState<"A" | "B">("A");
+  const [playing, setPlaying] = useState(false);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const section = buildSections[activeSection];
+
+  const saveVersion = async () => {
+    setSaveState("saving");
+    try {
+      const database = getDatabase();
+      await ensureSeeded(database);
+      const song = await database.songs.get(seedSongIds.borrowedLight);
+      if (!song) throw new Error("seed-song-missing");
+      const activeVersion = song.versions.find((version) => version.id === song.activeVersionId);
+      if (!activeVersion) throw new Error("active-version-missing");
+      const timestamp = new Date();
+      const version = {
+        ...activeVersion,
+        id: crypto.randomUUID(),
+        label: `Saved · ${timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
+        createdAt: timestamp.toISOString(),
+      };
+      await saveSong(addVersion(song, version, { activate: false }), database);
+      setSaveState("saved");
+      window.setTimeout(() => setSaveState("idle"), 2400);
+    } catch {
+      setSaveState("error");
+    }
+  };
+  return (
+    <div className="build-space">
+      <WorkspaceHeader
+        title="Build"
+        subtitle="Borrowed Light · saved just now"
+        onMenu={() => undefined}
+        onMentor={onMentor}
+      />
+      <main className="build-workspace">
+        <header className="build-toolbar">
+          <div>
+            <span className="section-kicker">SONG WORKSPACE</span>
+            <h1>Borrowed Light</h1>
+            <button className="title-menu" aria-label="Song options">
+              <MoreHorizontal size={18} />
+            </button>
+          </div>
+          <div className="build-toolbar__actions">
+            <button className="icon-button" aria-label="Undo">
+              <ArrowLeft size={17} />
+            </button>
+            <button className="icon-button" aria-label="Redo">
+              <ArrowRight size={17} />
+            </button>
+            <span className="toolbar-divider" />
+            <button
+              className="secondary-button"
+              onClick={() => void saveVersion()}
+              disabled={saveState === "saving"}
+            >
+              {saveState === "saved" ? <Check size={15} /> : <Copy size={15} />}
+              {saveState === "saving"
+                ? "Saving…"
+                : saveState === "saved"
+                  ? "Saved locally"
+                  : saveState === "error"
+                    ? "Try again"
+                    : "Save version"}
+            </button>
+            <button className="primary-button">
+              <Play size={15} fill="currentColor" /> Play song
+            </button>
+          </div>
+        </header>
+        <section className="song-map" aria-labelledby="song-map-heading">
+          <div className="song-map__heading">
+            <div>
+              <span className="section-kicker">ARRANGEMENT</span>
+              <h2 id="song-map-heading">Song map</h2>
+            </div>
+            <span>2:48 estimated</span>
+          </div>
+          <div className="section-tabs" role="tablist" aria-label="Song sections">
+            {buildSections.map((item, index) => (
+              <button
+                key={item.id}
+                role="tab"
+                aria-selected={activeSection === index}
+                className={`${activeSection === index ? "is-active" : ""} section-tab--${item.color}`}
+                onClick={() => setActiveSection(index)}
+              >
+                <span>0{index + 1}</span>
+                <strong>{item.name}</strong>
+                <small>{index === 0 ? "× 2" : "× 1"}</small>
+              </button>
+            ))}
+            <button className="section-tab__add">
+              <Plus size={18} /> Add section
+            </button>
+          </div>
+        </section>
+        <section className="section-editor" aria-labelledby="section-editor-heading">
+          <header>
+            <div>
+              <span className="section-kicker">SECTION 0{activeSection + 1}</span>
+              <h2 id="section-editor-heading">{section.name}</h2>
+            </div>
+            <div className="variation-switch" aria-label="Variation">
+              <span>VARIATION</span>
+              <button
+                className={variation === "A" ? "is-active" : ""}
+                onClick={() => setVariation("A")}
+              >
+                A
+              </button>
+              <button
+                className={variation === "B" ? "is-active" : ""}
+                onClick={() => setVariation("B")}
+              >
+                B
+              </button>
+              <button aria-label="Add variation">
+                <Plus size={13} />
+              </button>
+            </div>
+            <div className="section-editor__actions">
+              <button className="icon-button" aria-label="Duplicate section">
+                <Copy size={16} />
+              </button>
+              <button className="icon-button" aria-label="Delete section">
+                <Trash2 size={16} />
+              </button>
+            </div>
+          </header>
+          <div className="chord-blocks">
+            {section.chords.map((chord, index) => (
+              <article
+                key={chord.id}
+                className={`chord-block ${chord.color === "borrowed" ? "is-borrowed" : ""}`}
+              >
+                <button className="chord-block__drag" aria-label={`Reorder ${chord.name}`}>
+                  <span />
+                  <span />
+                  <span />
+                </button>
+                <span className="chord-block__count">0{index + 1}</span>
+                <strong>{variation === "B" && index === 2 ? "Em" : chord.name}</strong>
+                <em>{variation === "B" && index === 2 ? "iii" : chord.numeral}</em>
+                <div className="chord-block__beats">
+                  {Array.from({ length: chord.beats }).map((_, beat) => (
+                    <i key={beat} className={beat === 0 ? "is-strong" : ""} />
+                  ))}
+                </div>
+                <button className="chord-block__duration">
+                  {chord.beats} beats <ChevronDown size={12} />
+                </button>
+              </article>
+            ))}
+            <button className="chord-block chord-block--add">
+              <Plus size={20} />
+              <span>Add chord</span>
+            </button>
+          </div>
+          <div className="section-transport">
+            <button
+              className="transport-button"
+              onClick={() => setPlaying(!playing)}
+              aria-label={playing ? "Pause section" : "Play section"}
+            >
+              {playing ? (
+                <Pause size={16} fill="currentColor" />
+              ) : (
+                <Play size={16} fill="currentColor" />
+              )}
+            </button>
+            <span>00:00</span>
+            <div className="section-transport__line">
+              <i style={{ width: playing ? "42%" : "0%" }} />
+            </div>
+            <span>00:20</span>
+            <button className="loop-button">
+              <RotateCcw size={14} /> Loop
+            </button>
+          </div>
+        </section>
+        <section className="build-bottom">
+          <div className="variation-compare">
+            <span className="section-kicker">COMPARE</span>
+            <h3>A quieter turn for the second verse</h3>
+            <p>
+              Variation B replaces Am with Em, holding back the emotional drop until the chorus.
+            </p>
+            <div>
+              <button className="secondary-button">
+                <Play size={14} /> Hear A / B
+              </button>
+              <button className="text-button">
+                Use in verse two <ArrowRight size={14} />
+              </button>
+            </div>
+          </div>
+          <div className="arrangement-settings">
+            <div>
+              <span>Tempo</span>
+              <strong>96 BPM</strong>
+            </div>
+            <div>
+              <span>Key</span>
+              <strong>C major</strong>
+            </div>
+            <div>
+              <span>Band</span>
+              <strong>Open Road</strong>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  );
+}
+
+const growSteps = [
+  { title: "Listen", note: "Hear your progression once", icon: Headphones },
+  { title: "Predict", note: "Choose where it resolves", icon: CircleHelp },
+  { title: "Play", note: "Find it on your guitar", icon: Guitar },
+];
+
+function GrowSpace({ onMentor }: { onMentor: () => void }) {
+  const [started, setStarted] = useState(false);
+  const [answer, setAnswer] = useState<string | null>(null);
+  return (
+    <div className="grow-space">
+      <WorkspaceHeader
+        title="Grow"
+        subtitle="Your next 5 minutes"
+        onMenu={() => undefined}
+        onMentor={onMentor}
+      />
+      <main className="grow-workspace">
+        <section className="grow-intro">
+          <div>
+            <span className="section-kicker">MADE FROM YOUR MUSIC</span>
+            <h1>Find home without the map.</h1>
+            <p>
+              You’ve used the minor iv sound three times this week. Today, let’s hear where it wants
+              to land.
+            </p>
+          </div>
+          <div className="grow-streak">
+            <span>YOUR MOMENTUM</span>
+            <strong>4</strong>
+            <em>day streak</em>
+            <div>
+              {["M", "T", "W", "T", "F", "S", "S"].map((day, index) => (
+                <i key={`${day}-${index}`} className={index < 4 ? "is-complete" : ""}>
+                  {index < 4 ? <Check size={10} /> : day}
+                </i>
+              ))}
+            </div>
+          </div>
+        </section>
+        <section className={`challenge-stage ${started ? "is-started" : ""}`}>
+          <header>
+            <div className="challenge-number">01</div>
+            <div>
+              <span className="section-kicker">TODAY’S CHALLENGE · 5 MIN</span>
+              <h2>Find Home</h2>
+            </div>
+            <span className="difficulty">EAR · DEVELOPING</span>
+          </header>
+          {!started ? (
+            <>
+              <div className="challenge-visual" aria-hidden="true">
+                <div className="challenge-visual__rings" />
+                <span className="challenge-visual__chord">Fm</span>
+                <span className="challenge-visual__question">?</span>
+                <i />
+              </div>
+              <p className="challenge-prompt">
+                Can you hear which chord releases this borrowed tension?
+              </p>
+              <div className="challenge-steps">
+                {growSteps.map(({ title, note, icon: Icon }, index) => (
+                  <div key={title}>
+                    <span>0{index + 1}</span>
+                    <Icon size={19} />
+                    <div>
+                      <strong>{title}</strong>
+                      <small>{note}</small>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button
+                className="primary-button primary-button--large"
+                onClick={() => setStarted(true)}
+              >
+                <Play size={17} fill="currentColor" /> Begin challenge
+              </button>
+            </>
+          ) : (
+            <div className="challenge-live">
+              <button className="challenge-audio" aria-label="Replay progression">
+                <Volume2 size={25} />
+                <span>
+                  {[18, 32, 55, 80, 44, 62, 28, 47, 71, 35].map((h, i) => (
+                    <i key={i} style={{ height: `${h}%` }} />
+                  ))}
+                </span>
+                <em>Replay</em>
+              </button>
+              <h3>Which chord feels like home?</h3>
+              <div className="challenge-answers">
+                {["Am", "C", "G"].map((chord) => (
+                  <button
+                    key={chord}
+                    className={`${answer === chord ? "is-selected" : ""} ${answer && chord === "C" ? "is-correct" : ""}`}
+                    onClick={() => setAnswer(chord)}
+                  >
+                    {chord}
+                    {answer && chord === "C" && <Check size={16} />}
+                  </button>
+                ))}
+              </div>
+              {answer && (
+                <div
+                  className={`challenge-feedback ${answer === "C" ? "is-correct" : ""}`}
+                  role="status"
+                >
+                  <Sparkles size={18} />
+                  <div>
+                    <strong>
+                      {answer === "C" ? "That’s home." : "Listen for a more settled release."}
+                    </strong>
+                    <p>
+                      {answer === "C"
+                        ? "Fm → C is the minor iv resolving to I—the bittersweet turn from your song Borrowed Light."
+                        : "Try replaying it and notice which option removes all the tension."}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+        <section className="growth-profile">
+          <header>
+            <div>
+              <span className="section-kicker">YOUR MUSICAL EAR</span>
+              <h2>What’s becoming instinct</h2>
+            </div>
+            <button className="text-button">
+              View profile <ArrowRight size={14} />
+            </button>
+          </header>
+          <div className="skill-lines">
+            {[
+              ["V → I resolution", 86, "Strong"],
+              ["Major-key movement", 72, "Growing"],
+              ["Borrowed harmony", 48, "Exploring"],
+              ["Section contrast", 34, "Next up"],
+            ].map(([name, value, label]) => (
+              <div key={String(name)}>
+                <span>{name}</span>
+                <div>
+                  <i style={{ width: `${value}%` }} />
+                </div>
+                <strong>{label}</strong>
+              </div>
+            ))}
+          </div>
+        </section>
+      </main>
+    </div>
+  );
+}
+
+interface LibraryItem {
+  id: string;
+  title: string;
+  type: "Song" | "Idea" | "Session";
+  key: string;
+  bpm: number;
+  chords: string[];
+  date: string;
+  favorite: boolean;
+  color: "lime" | "sand" | "blue" | "plum";
+}
+
+const libraryItems: LibraryItem[] = [
+  {
+    id: "l1",
+    title: "Borrowed Light",
+    type: "Song",
+    key: "C major",
+    bpm: 96,
+    chords: ["C", "G", "Am", "F", "Fm"],
+    date: "Today",
+    favorite: true,
+    color: "lime",
+  },
+  {
+    id: "l2",
+    title: "Open Road",
+    type: "Song",
+    key: "G major",
+    bpm: 112,
+    chords: ["G", "D", "Em", "C"],
+    date: "Yesterday",
+    favorite: false,
+    color: "sand",
+  },
+  {
+    id: "l3",
+    title: "Blue Hour",
+    type: "Idea",
+    key: "D minor",
+    bpm: 78,
+    chords: ["Dm", "B♭", "F", "C"],
+    date: "Jul 22",
+    favorite: true,
+    color: "blue",
+  },
+  {
+    id: "l4",
+    title: "Late Window",
+    type: "Session",
+    key: "A minor",
+    bpm: 84,
+    chords: ["Am", "F", "C", "G"],
+    date: "Jul 19",
+    favorite: false,
+    color: "plum",
+  },
+];
+
+function LibrarySpace({ onMentor, onResume }: { onMentor: () => void; onResume: () => void }) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("All");
+  const [items, setItems] = useState<LibraryItem[]>(libraryItems);
+  const [favorites, setFavorites] = useState(
+    () => new Set(libraryItems.filter((item) => item.favorite).map((item) => item.id)),
+  );
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const database = getDatabase();
+        await ensureSeeded(database);
+        const songs = await database.songs.orderBy("updatedAt").reverse().toArray();
+        const colors: LibraryItem["color"][] = ["lime", "sand", "blue", "plum"];
+        const mapped = songs.map((song, index): LibraryItem => {
+          const version =
+            song.versions.find((candidate) => candidate.id === song.activeVersionId) ??
+            song.versions[0];
+          const primary = song.key?.primary;
+          const keyName = primary
+            ? `${formatChord({ root: primary.tonic, quality: "major" })} ${primary.mode}`
+            : "Key open";
+          const favorite = song.title === "Borrowed Light" || song.title === "Blue Hour";
+          return {
+            id: song.id,
+            title: song.title,
+            type: song.title === "Blue Hour" ? "Idea" : "Song",
+            key: keyName,
+            bpm: song.bpm,
+            chords: version.sections
+              .flatMap((section) => section.chords)
+              .slice(0, 6)
+              .map((block) => formatChord(block.chord)),
+            date: song.tags.includes("example") ? "Ready" : "Saved locally",
+            favorite,
+            color: colors[index % colors.length],
+          };
+        });
+        if (active && mapped.length > 0) {
+          setItems(mapped);
+          setFavorites(new Set(mapped.filter((item) => item.favorite).map((item) => item.id)));
+        }
+      } catch {
+        // IndexedDB can be unavailable in strict private modes; showcase seeds remain usable.
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const filtered = items.filter(
+    (item) =>
+      (filter === "All" || item.type === filter) &&
+      item.title.toLowerCase().includes(query.toLowerCase()),
+  );
+  const toggleFavorite = (id: string) => {
+    setFavorites((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  return (
+    <div className="library-space">
+      <WorkspaceHeader
+        title="Library"
+        subtitle="Your musical memory"
+        onMenu={() => undefined}
+        onMentor={onMentor}
+      />
+      <main className="library-workspace">
+        <header className="library-heading">
+          <div>
+            <span className="section-kicker">PICK UP WHERE YOU LEFT OFF</span>
+            <h1>Your music</h1>
+          </div>
+          <div className="library-heading__actions">
+            <button className="secondary-button">
+              <Upload size={15} /> Import
+            </button>
+            <button className="primary-button" onClick={onResume}>
+              <Plus size={15} /> New idea
+            </button>
+          </div>
+        </header>
+        <section className="library-tools" aria-label="Library filters">
+          <label className="library-search">
+            <Search size={17} />
+            <span className="sr-only">Search your music</span>
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search your music…"
+            />
+            {query && (
+              <button onClick={() => setQuery("")} aria-label="Clear search">
+                <X size={14} />
+              </button>
+            )}
+          </label>
+          <div className="library-filters">
+            {["All", "Song", "Idea", "Session"].map((item) => (
+              <button
+                key={item}
+                className={filter === item ? "is-active" : ""}
+                onClick={() => setFilter(item)}
+              >
+                {item}
+              </button>
+            ))}
+          </div>
+          <button className="sort-button">
+            Last updated <ChevronDown size={14} />
+          </button>
+        </section>
+        <section className="library-list" aria-label="Saved music">
+          <div className="library-list__labels">
+            <span>NAME</span>
+            <span>PROGRESSION</span>
+            <span>KEY / TEMPO</span>
+            <span>UPDATED</span>
+            <span />
+          </div>
+          {filtered.map((item) => (
+            <article key={item.id} className="library-item">
+              <div className="library-item__identity">
+                <div className={`idea-cover idea-cover--${item.color}`} aria-hidden="true">
+                  <Music2 size={20} />
+                </div>
+                <div>
+                  <strong>{item.title}</strong>
+                  <span>{item.type}</span>
+                </div>
+              </div>
+              <div className="library-item__progression">
+                {item.chords.map((chord, index) => (
+                  <span key={`${chord}-${index}`}>{chord}</span>
+                ))}
+              </div>
+              <div className="library-item__context">
+                <strong>{item.key}</strong>
+                <span>{item.bpm} BPM</span>
+              </div>
+              <time>{item.date}</time>
+              <div className="library-item__actions">
+                <button
+                  onClick={() => toggleFavorite(item.id)}
+                  aria-label={`${favorites.has(item.id) ? "Remove" : "Add"} ${item.title} ${favorites.has(item.id) ? "from" : "to"} favorites`}
+                >
+                  <Star size={16} fill={favorites.has(item.id) ? "currentColor" : "none"} />
+                </button>
+                <button className="resume-button" onClick={onResume}>
+                  Resume <ArrowRight size={14} />
+                </button>
+                <button aria-label={`More options for ${item.title}`}>
+                  <MoreHorizontal size={17} />
+                </button>
+              </div>
+            </article>
+          ))}
+          {filtered.length === 0 && (
+            <div className="library-empty">
+              <Search size={24} />
+              <strong>No ideas found</strong>
+              <p>Try another search or filter.</p>
+            </div>
+          )}
+        </section>
+        <section className="discoveries">
+          <header>
+            <div>
+              <span className="section-kicker">SOUNDS YOU’VE DISCOVERED</span>
+              <h2>Your chord vocabulary</h2>
+            </div>
+            <button className="text-button">
+              See all 12 <ArrowRight size={14} />
+            </button>
+          </header>
+          <div className="discovery-list">
+            <article>
+              <span>01</span>
+              <div>
+                <strong>IV → iv → I</strong>
+                <p>The bittersweet return</p>
+              </div>
+              <em>Used 3 times</em>
+            </article>
+            <article>
+              <span>02</span>
+              <div>
+                <strong>ii → V → I</strong>
+                <p>The strong homecoming</p>
+              </div>
+              <em>Used 7 times</em>
+            </article>
+            <article>
+              <span>03</span>
+              <div>
+                <strong>I → III7 → vi</strong>
+                <p>The bright side-door</p>
+              </div>
+              <em>New</em>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+  );
+}
+
+function MentorDrawer({
+  open,
+  onClose,
+  currentChord = "C",
+}: {
+  open: boolean;
+  onClose: () => void;
+  currentChord?: string;
+}) {
+  const [question, setQuestion] = useState("");
+  const [isThinking, setIsThinking] = useState(false);
+  const [messages, setMessages] = useState<{ source: "user" | "coach"; text: string }[]>([
+    {
+      source: "coach",
+      text: "I’m following your session. Ask about the harmony, or tell me how you want this section to feel.",
+    },
+  ]);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (open) window.setTimeout(() => inputRef.current?.focus(), 150);
+  }, [open]);
+  const submit = async (text = question) => {
+    const cleanQuestion = text.trim();
+    if (!cleanQuestion || isThinking) return;
+    const lowerQuestion = cleanQuestion.toLowerCase();
+    const intent = lowerQuestion.includes("dark")
+      ? "darken"
+      : lowerQuestion.includes("chorus") || lowerQuestion.includes("contrast")
+        ? "contrast"
+        : lowerQuestion.includes("why")
+          ? "explain"
+          : "teach";
+    const key = { tonic: 0, mode: "major" as const, confidence: 0.87 };
+    setMessages((current) => [...current, { source: "user", text: cleanQuestion }]);
+    setQuestion("");
+    setIsThinking(true);
+    try {
+      const response = await fetch("/api/mentor", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          schemaVersion: 1,
+          question: cleanQuestion,
+          intent,
+          context: {
+            currentChord: { root: 0, quality: "major" },
+            key,
+            progression: SHOWCASE_PROGRESSION,
+            assistanceLevel: "developing",
+            allowedSuggestions: getSuggestions({ root: 0, quality: "major" }, key),
+          },
+        }),
+      });
+      const payload = (await response.json()) as { answer?: unknown };
+      if (!response.ok || typeof payload.answer !== "string") throw new Error("mentor-unavailable");
+      setMessages((current) => [...current, { source: "coach", text: payload.answer as string }]);
+    } catch {
+      setMessages((current) => [
+        ...current,
+        {
+          source: "coach",
+          text: `From ${currentChord}, try one familiar move and one color change. F → Fm → C keeps home in view while the borrowed Fm adds a bittersweet pull.`,
+        },
+      ]);
+    } finally {
+      setIsThinking(false);
+    }
+  };
+
+  if (!open) return null;
+  return (
+    <>
+      <button
+        className={`mentor-scrim ${open ? "is-open" : ""}`}
+        aria-label="Close Compass mentor"
+        onClick={onClose}
+      />
+      <aside
+        className={`mentor-drawer ${open ? "is-open" : ""}`}
+        aria-hidden={!open}
+        aria-label="Compass mentor"
+      >
+        <header className="mentor-drawer__header">
+          <div className="mentor-orb">
+            <Sparkles size={17} />
+          </div>
+          <div>
+            <strong>Compass</strong>
+            <span>
+              <i /> Listening to this session
+            </span>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="Close mentor">
+            <X size={19} />
+          </button>
+        </header>
+        <div className="mentor-context">
+          <span>CURRENT CONTEXT</span>
+          <div>
+            <strong>{currentChord}</strong>
+            <ArrowRight size={13} />
+            <strong>?</strong>
+            <em>C major · 96 BPM</em>
+          </div>
+        </div>
+        <div className="mentor-messages" aria-live="polite">
+          {messages.map((message, index) => (
+            <div key={index} className={`mentor-message mentor-message--${message.source}`}>
+              {message.source === "coach" && <Sparkles size={14} />}
+              <p>{message.text}</p>
+            </div>
+          ))}
+        </div>
+        <div className="mentor-prompts">
+          {["Why did that work?", "Make this darker", "Give me a chorus route"].map((prompt) => (
+            <button key={prompt} onClick={() => void submit(prompt)} disabled={isThinking}>
+              {prompt}
+            </button>
+          ))}
+        </div>
+        <form
+          className="mentor-input"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}
+        >
+          <label className="sr-only" htmlFor="mentor-question">
+            Ask about your music
+          </label>
+          <input
+            ref={inputRef}
+            id="mentor-question"
+            value={question}
+            onChange={(event) => setQuestion(event.target.value)}
+            placeholder={isThinking ? "Listening to the harmony…" : "Ask about your music…"}
+            maxLength={600}
+          />
+          <button aria-label="Send question" disabled={!question.trim() || isThinking}>
+            <ArrowRight size={17} />
+          </button>
+        </form>
+        <p className="mentor-note">Text guidance only · your audio stays on device</p>
+      </aside>
+    </>
+  );
+}
+
+export function HarmonicCompassApp({ initialShowcase = false }: { initialShowcase?: boolean }) {
+  const [entered, setEntered] = useState(initialShowcase);
+  const [activeSpace, setActiveSpace] = useState<Space>("play");
+  const [inputMode, setInputMode] = useState<InputMode>(initialShowcase ? "demo" : "idle");
+  const [mentorOpen, setMentorOpen] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [liveChord, setLiveChord] = useState<string | null>(null);
+  const [listenNotice, setListenNotice] = useState<string | null>(null);
+  const listenerRef = useRef<MicrophoneChordListener | null>(null);
+
+  useEffect(() => {
+    const handlePreview = (event: Event) => {
+      if (event instanceof CustomEvent) {
+        listenerRef.current?.setPreviewActive(Boolean(event.detail));
+      }
+    };
+    window.addEventListener("harmonic-compass-preview", handlePreview);
+    return () => {
+      window.removeEventListener("harmonic-compass-preview", handlePreview);
+      void listenerRef.current?.stop();
+    };
+  }, []);
+
+  const changeInputMode = (mode: InputMode) => {
+    setInputMode(mode);
+    if (mode !== "listening") {
+      void listenerRef.current?.stop();
+      listenerRef.current = null;
+      return;
+    }
+    void listenerRef.current?.stop();
+    const listener = new MicrophoneChordListener({
+      onConfirmed: (event) => {
+        setLiveChord(formatChord(event.primary.chord));
+        setListenNotice(null);
+      },
+      onHealth: (health) => {
+        if (health.message) setListenNotice(health.message);
+      },
+    });
+    listenerRef.current = listener;
+    void listener.start();
+  };
+
+  if (!entered) {
+    return (
+      <Onboarding
+        onListen={() => {
+          setEntered(true);
+          changeInputMode("listening");
+        }}
+        onDemo={() => {
+          setEntered(true);
+          changeInputMode("demo");
+        }}
+      />
+    );
+  }
+
+  return (
+    <div className={`app-shell app-shell--${activeSpace}`}>
+      <AppNavigation
+        activeSpace={activeSpace}
+        setActiveSpace={setActiveSpace}
+        mobileOpen={mobileOpen}
+        setMobileOpen={setMobileOpen}
+      />
+      <div className="app-main">
+        {activeSpace === "play" && (
+          <PlaySpace
+            inputMode={inputMode}
+            setInputMode={changeInputMode}
+            onMentor={() => setMentorOpen(true)}
+            onOpenBuild={() => setActiveSpace("build")}
+            liveChord={liveChord}
+          />
+        )}
+        {activeSpace === "build" && <BuildSpace onMentor={() => setMentorOpen(true)} />}
+        {activeSpace === "grow" && <GrowSpace onMentor={() => setMentorOpen(true)} />}
+        {activeSpace === "library" && (
+          <LibrarySpace
+            onMentor={() => setMentorOpen(true)}
+            onResume={() => setActiveSpace("build")}
+          />
+        )}
+      </div>
+      <MentorDrawer open={mentorOpen} onClose={() => setMentorOpen(false)} />
+      {listenNotice && (
+        <div className="app-notice" role="status">
+          <Mic2 size={17} />
+          <p>{listenNotice}</p>
+          <button
+            onClick={() => {
+              changeInputMode("demo");
+              setListenNotice(null);
+            }}
+          >
+            Use demo
+          </button>
+          <button
+            className="icon-button"
+            aria-label="Dismiss message"
+            onClick={() => setListenNotice(null)}
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Harmonic Compass</title>
+  <rect width="512" height="512" rx="112" fill="#0b0d0c"/>
+  <circle cx="256" cy="256" r="172" fill="none" stroke="#343b30" stroke-width="8"/>
+  <path d="M256 58 286 226 454 256 286 286 256 454 226 286 58 256 226 226Z" fill="#c8ff5a"/>
+  <circle cx="256" cy="256" r="54" fill="#0b0d0c" stroke="#f3f0e6" stroke-width="12"/>
+</svg>
