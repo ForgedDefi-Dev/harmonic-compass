@@ -2,18 +2,13 @@ name: Harmonic Compass
 
 on:
   push:
-    paths:
-      - "2026-07-24/build-this-app-end-to-end/**"
+    branches:
+      - main
   pull_request:
-    paths:
-      - "2026-07-24/build-this-app-end-to-end/**"
 
 jobs:
   verify:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: 2026-07-24/build-this-app-end-to-end
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -23,7 +18,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: 2026-07-24/build-this-app-end-to-end/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
@@ -36,6 +31,6 @@ jobs:
         with:
           name: harmonic-compass-verification
           path: |
-            2026-07-24/build-this-app-end-to-end/playwright-report
-            2026-07-24/build-this-app-end-to-end/test-results
-            2026-07-24/build-this-app-end-to-end/coverage
+            playwright-report
+            test-results
+            coverage
