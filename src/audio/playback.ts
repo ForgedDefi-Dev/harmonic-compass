@@ -1,5 +1,6 @@
 import type { ChordSymbol } from "@/types/music";
-import { chordPitchClasses } from "@/music/theory";
+import { guitarVoicingNotes } from "@/music/guitar";
+import { chordPitchClasses, formatChord } from "@/music/theory";
 
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
@@ -21,68 +22,243 @@ interface ToneInstrument {
   volume: { value: number };
 }
 
+export type ChordPreviewPattern = "strum" | "arpeggio";
+
+export interface ChordPreviewOptions {
+  pattern?: ChordPreviewPattern;
+  durationSeconds?: number;
+}
+
+function noteFrequency(note: string): number {
+  const match = /^([A-G])(#?)(-?\d+)$/.exec(note);
+  if (!match) return 440;
+  const pitchClasses: Record<string, number> = {
+    C: 0,
+    "C#": 1,
+    D: 2,
+    "D#": 3,
+    E: 4,
+    F: 5,
+    "F#": 6,
+    G: 7,
+    "G#": 8,
+    A: 9,
+    "A#": 10,
+    B: 11,
+  };
+  const pitch = pitchClasses[`${match[1]}${match[2]}`] ?? 9;
+  const midi = (Number(match[3]) + 1) * 12 + pitch;
+  return 440 * 2 ** ((midi - 69) / 12);
+}
+
+function seededNoise(seed: number): () => number {
+  let state = seed | 0;
+  return () => {
+    state = Math.imul(state ^ (state >>> 15), 1 | state);
+    state ^= state + Math.imul(state ^ (state >>> 7), 61 | state);
+    return (((state ^ (state >>> 14)) >>> 0) / 4294967296) * 2 - 1;
+  };
+}
+
+function createPluckedStringBuffer(
+  context: AudioContext,
+  frequency: number,
+  durationSeconds: number,
+  voiceIndex: number,
+): AudioBuffer {
+  const sampleRate = context.sampleRate;
+  const length = Math.ceil(sampleRate * durationSeconds);
+  const buffer = context.createBuffer(1, length, sampleRate);
+  const signal = buffer.getChannelData(0);
+  const period = Math.max(2, Math.round(sampleRate / frequency));
+  const noise = seededNoise(Math.round(frequency * 100) + voiceIndex * 8191);
+
+  let previousNoise = 0;
+  for (let sample = 0; sample < period && sample < length; sample += 1) {
+    const pick = noise();
+    previousNoise = previousNoise * 0.36 + pick * 0.64;
+    signal[sample] = previousNoise * (0.88 - (sample / period) * 0.12);
+  }
+
+  const damping = Math.min(0.9992, 0.9962 + frequency / 260_000);
+  for (let sample = period; sample < length; sample += 1) {
+    const delayed = signal[sample - period] ?? 0;
+    const neighbor = signal[sample - period + 1] ?? delayed;
+    signal[sample] = (delayed + neighbor) * 0.5 * damping;
+  }
+
+  return buffer;
+}
+
 export class ChordPreviewPlayer {
-  private tone?: typeof import("tone");
-  private synth?: ToneInstrument;
+  private context?: AudioContext;
+  private sources = new Set<AudioBufferSourceNode>();
+  private master?: GainNode;
   private activeUntil?: ReturnType<typeof setTimeout>;
 
   constructor(private readonly onPreviewState?: (active: boolean) => void) {}
 
-  async preview(chord: ChordSymbol, durationSeconds = 1.4): Promise<void> {
+  async preview(chord: ChordSymbol, options: ChordPreviewOptions = {}): Promise<void> {
+    await this.previewGuitarChord(formatChord(chord), options);
+  }
+
+  async previewGuitarChord(chord: string, options: ChordPreviewOptions = {}): Promise<void> {
     await this.stop();
-    this.tone ??= await import("tone");
-    await this.tone.start();
-    const synth = new this.tone.PolySynth(this.tone.Synth, {
-      oscillator: { type: "triangle8" },
-      envelope: { attack: 0.015, decay: 0.22, sustain: 0.34, release: 0.75 },
-    }).toDestination() as unknown as ToneInstrument;
-    synth.volume.value = -11;
-    this.synth = synth;
     this.onPreviewState?.(true);
-    synth.triggerAttackRelease(chordNotes(chord), durationSeconds);
-    this.activeUntil = setTimeout(
-      () => {
-        void this.stop();
-      },
-      durationSeconds * 1000 + 850,
+    let context: AudioContext;
+    try {
+      context = await this.prepareContext();
+    } catch (error) {
+      this.finishPreview();
+      throw error;
+    }
+    const pattern = options.pattern ?? "strum";
+    const durationSeconds = options.durationSeconds ?? (pattern === "arpeggio" ? 2.4 : 1.8);
+    const notes = guitarVoicingNotes(chord);
+    this.scheduleGuitarChord(notes, context.currentTime + 0.035, pattern, durationSeconds);
+    const spacing = pattern === "arpeggio" ? 0.18 : 0.032;
+    const previewDurationMs = (durationSeconds + notes.length * spacing + 0.8) * 1000;
+    this.activeUntil = setTimeout(() => this.finishPreview(), previewDurationMs);
+  }
+
+  async previewRoute(
+    chords: ChordSymbol[],
+    bpm = 96,
+    pattern: ChordPreviewPattern = "strum",
+  ): Promise<void> {
+    await this.previewGuitarRoute(
+      chords.map((chord) => formatChord(chord)),
+      bpm,
+      pattern,
     );
   }
 
-  async previewRoute(chords: ChordSymbol[], bpm = 96): Promise<void> {
+  async previewGuitarRoute(
+    chords: string[],
+    bpm = 96,
+    pattern: ChordPreviewPattern = "strum",
+  ): Promise<void> {
     await this.stop();
-    this.tone ??= await import("tone");
-    await this.tone.start();
-    const synth = new this.tone.PolySynth(this.tone.Synth, {
-      oscillator: { type: "triangle8" },
-      envelope: { attack: 0.012, decay: 0.18, sustain: 0.3, release: 0.45 },
-    }).toDestination() as unknown as ToneInstrument;
-    synth.volume.value = -12;
-    this.synth = synth;
     this.onPreviewState?.(true);
+    let context: AudioContext;
+    try {
+      context = await this.prepareContext();
+    } catch (error) {
+      this.finishPreview();
+      throw error;
+    }
     const secondsPerChord = (60 / bpm) * 2;
-    const now = this.tone.now() + 0.04;
+    const now = context.currentTime + 0.04;
     chords.forEach((chord, index) => {
-      synth.triggerAttackRelease(
-        chordNotes(chord),
-        secondsPerChord * 0.82,
+      this.scheduleGuitarChord(
+        guitarVoicingNotes(chord),
         now + index * secondsPerChord,
+        pattern,
+        secondsPerChord * 0.78,
       );
     });
-    this.activeUntil = setTimeout(
-      () => void this.stop(),
-      (chords.length * secondsPerChord + 0.7) * 1000,
-    );
+    const previewDurationMs = (chords.length * secondsPerChord + 0.7) * 1000;
+    this.activeUntil = setTimeout(() => this.finishPreview(), previewDurationMs);
+  }
+
+  private async prepareContext(): Promise<AudioContext> {
+    if (!this.context) {
+      const AudioContextConstructor =
+        window.AudioContext ??
+        (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextConstructor) throw new Error("Web Audio is not supported in this browser.");
+      this.context = new AudioContextConstructor();
+    }
+    if (this.context.state === "suspended") await this.context.resume();
+
+    const master = this.context.createGain();
+    const compressor = this.context.createDynamicsCompressor();
+    master.gain.value = 0.72;
+    compressor.threshold.value = -18;
+    compressor.knee.value = 16;
+    compressor.ratio.value = 3;
+    compressor.attack.value = 0.004;
+    compressor.release.value = 0.22;
+    master.connect(compressor).connect(this.context.destination);
+    this.master = master;
+    return this.context;
+  }
+
+  private scheduleGuitarChord(
+    notes: string[],
+    startAt: number,
+    pattern: ChordPreviewPattern,
+    durationSeconds: number,
+  ): void {
+    const context = this.context;
+    const master = this.master;
+    if (!context || !master) return;
+    const spacing = pattern === "arpeggio" ? 0.18 : 0.032;
+    notes.forEach((note, index) => {
+      const noteDuration =
+        pattern === "arpeggio" ? Math.max(0.82, durationSeconds - index * 0.055) : durationSeconds;
+      const frequency = noteFrequency(note);
+      const source = context.createBufferSource();
+      const warmth = context.createBiquadFilter();
+      const voiceGain = context.createGain();
+      const panner = context.createStereoPanner();
+      const noteStart = startAt + index * spacing;
+      const velocity = Math.max(0.38, 0.72 - index * 0.035);
+
+      source.buffer = createPluckedStringBuffer(context, frequency, noteDuration + 0.35, index);
+      warmth.type = "lowpass";
+      warmth.frequency.value = Math.min(6200, 2800 + frequency * 4.4);
+      warmth.Q.value = 0.72;
+      panner.pan.value = Math.max(-0.28, Math.min(0.28, (index - (notes.length - 1) / 2) * 0.1));
+      voiceGain.gain.setValueAtTime(0.0001, noteStart);
+      voiceGain.gain.exponentialRampToValueAtTime(velocity, noteStart + 0.007);
+      voiceGain.gain.exponentialRampToValueAtTime(0.0001, noteStart + noteDuration);
+
+      source.connect(warmth).connect(voiceGain).connect(panner).connect(master);
+      source.onended = () => {
+        this.sources.delete(source);
+        source.disconnect();
+        warmth.disconnect();
+        voiceGain.disconnect();
+        panner.disconnect();
+      };
+      this.sources.add(source);
+      source.start(noteStart);
+      source.stop(noteStart + noteDuration + 0.08);
+    });
+  }
+
+  private finishPreview(): void {
+    this.activeUntil = undefined;
+    this.onPreviewState?.(false);
   }
 
   async stop(): Promise<void> {
     if (this.activeUntil) clearTimeout(this.activeUntil);
     this.activeUntil = undefined;
-    this.synth?.dispose();
-    this.synth = undefined;
+    const context = this.context;
+    const master = this.master;
+    if (context && master) {
+      const now = context.currentTime;
+      master.gain.cancelScheduledValues(now);
+      master.gain.setValueAtTime(Math.max(0.0001, master.gain.value), now);
+      master.gain.exponentialRampToValueAtTime(0.0001, now + 0.035);
+      const sources = [...this.sources];
+      setTimeout(() => {
+        sources.forEach((source) => {
+          try {
+            source.stop();
+          } catch {
+            // A source that already reached its natural end needs no further cleanup.
+          }
+        });
+        master.disconnect();
+      }, 55);
+    }
+    this.master = undefined;
     this.onPreviewState?.(false);
   }
 }
-
 export type BandStyle = "campfire" | "open-road" | "night-air";
 export type BandDensity = 1 | 2 | 3;
 
