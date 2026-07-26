@@ -60,40 +60,108 @@ function seededNoise(seed: number): () => number {
   };
 }
 
+/**
+ * A deliberately small physical model for a warm steel-string acoustic guitar.
+ *
+ * It is not intended to replace a multisampled instrument. It does, however,
+ * model the things that make an acoustic preview feel musical instead of like
+ * a bright test oscillator: a rounded pick transient, a damped string loop,
+ * and a quiet, slowly decaying wooden-body resonance.
+ */
+export const STEEL_STRING_PROFILE = {
+  pickAttackSeconds: 0.009,
+  excitationSmoothing: 0.24,
+  bodyMix: 0.048,
+  bodyDecaySeconds: 0.48,
+  damping: 0.9971,
+} as const;
+
+export function synthesizeSteelString(
+  sampleRate: number,
+  frequency: number,
+  durationSeconds: number,
+  voiceIndex = 0,
+): Float32Array {
+  const length = Math.ceil(sampleRate * durationSeconds);
+  const signal = new Float32Array(length);
+  const period = Math.max(2, Math.round(sampleRate / frequency));
+  const noise = seededNoise(Math.round(frequency * 100) + voiceIndex * 8191);
+
+  // A soft, correlated excitation keeps the pick present without the brittle
+  // white-noise edge that made the old previews sound metallic and twangy.
+  let previousNoise = 0;
+  for (let sample = 0; sample < period && sample < length; sample += 1) {
+    previousNoise += (noise() - previousNoise) * STEEL_STRING_PROFILE.excitationSmoothing;
+    const pickShape = 0.92 - (sample / period) * 0.25;
+    signal[sample] = previousNoise * pickShape;
+  }
+
+  // Karplus–Strong loop. High strings lose energy a touch sooner, as they do
+  // on a real guitar, while the bass strings keep a rounder sustain.
+  const damping = Math.max(
+    0.9959,
+    STEEL_STRING_PROFILE.damping - Math.min(0.0011, frequency * 0.0000012),
+  );
+  for (let sample = period; sample < length; sample += 1) {
+    const delayed = signal[sample - period] ?? 0;
+    const neighbor = signal[sample - period + 1] ?? delayed;
+    signal[sample] = (delayed * 0.68 + neighbor * 0.32) * damping;
+  }
+
+  // Roll the string signal into the softer voice of an acoustic body and add
+  // very low-level body modes. These modes are intentionally quiet: they add
+  // wood and air, not an audible synthetic organ tone.
+  const stringSmoothing = Math.min(0.34, 0.2 + frequency / 5_000);
+  let smoothed = 0;
+  let peak = 0;
+  const bodyPhase = (voiceIndex % 7) * 0.42;
+  for (let sample = 0; sample < length; sample += 1) {
+    const seconds = sample / sampleRate;
+    const raw = signal[sample] ?? 0;
+    smoothed += (raw - smoothed) * stringSmoothing;
+    const attack = Math.min(1, seconds / STEEL_STRING_PROFILE.pickAttackSeconds);
+    const bodyEnvelope =
+      (1 - Math.exp(-seconds / 0.012)) * Math.exp(-seconds / STEEL_STRING_PROFILE.bodyDecaySeconds);
+    const body =
+      (Math.sin(2 * Math.PI * 96 * seconds + bodyPhase) * 0.78 +
+        Math.sin(2 * Math.PI * 188 * seconds + bodyPhase * 0.7) * 0.36 +
+        Math.sin(2 * Math.PI * 286 * seconds + bodyPhase * 1.3) * 0.14) *
+      STEEL_STRING_PROFILE.bodyMix *
+      bodyEnvelope;
+    const value = (smoothed * 0.94 + raw * 0.06 + body) * attack;
+    signal[sample] = value;
+    peak = Math.max(peak, Math.abs(value));
+  }
+
+  // Keep chord voicings consistent in level while retaining plenty of headroom
+  // for the per-string velocity and the master compressor.
+  const targetPeak = 0.62;
+  const scale = peak > 0.0001 ? targetPeak / peak : 1;
+  for (let sample = 0; sample < length; sample += 1) signal[sample] *= scale;
+  return signal;
+}
+
 function createPluckedStringBuffer(
   context: AudioContext,
   frequency: number,
   durationSeconds: number,
   voiceIndex: number,
 ): AudioBuffer {
-  const sampleRate = context.sampleRate;
-  const length = Math.ceil(sampleRate * durationSeconds);
-  const buffer = context.createBuffer(1, length, sampleRate);
-  const signal = buffer.getChannelData(0);
-  const period = Math.max(2, Math.round(sampleRate / frequency));
-  const noise = seededNoise(Math.round(frequency * 100) + voiceIndex * 8191);
-
-  let previousNoise = 0;
-  for (let sample = 0; sample < period && sample < length; sample += 1) {
-    const pick = noise();
-    previousNoise = previousNoise * 0.36 + pick * 0.64;
-    signal[sample] = previousNoise * (0.88 - (sample / period) * 0.12);
-  }
-
-  const damping = Math.min(0.9992, 0.9962 + frequency / 260_000);
-  for (let sample = period; sample < length; sample += 1) {
-    const delayed = signal[sample - period] ?? 0;
-    const neighbor = signal[sample - period + 1] ?? delayed;
-    signal[sample] = (delayed + neighbor) * 0.5 * damping;
-  }
-
+  const buffer = context.createBuffer(
+    1,
+    Math.ceil(context.sampleRate * durationSeconds),
+    context.sampleRate,
+  );
+  buffer
+    .getChannelData(0)
+    .set(synthesizeSteelString(context.sampleRate, frequency, durationSeconds, voiceIndex));
   return buffer;
 }
-
 export class ChordPreviewPlayer {
   private context?: AudioContext;
   private sources = new Set<AudioBufferSourceNode>();
   private master?: GainNode;
+  private outputNodes: AudioNode[] = [];
   private activeUntil?: ReturnType<typeof setTimeout>;
 
   constructor(private readonly onPreviewState?: (active: boolean) => void) {}
@@ -172,14 +240,26 @@ export class ChordPreviewPlayer {
     if (this.context.state === "suspended") await this.context.resume();
 
     const master = this.context.createGain();
+    const body = this.context.createBiquadFilter();
+    const air = this.context.createBiquadFilter();
     const compressor = this.context.createDynamicsCompressor();
-    master.gain.value = 0.72;
+    master.gain.value = 0.68;
+
+    // A little low-mid wood and a gentle air roll-off make the whole chord feel
+    // like it is coming from a guitar body instead of a bright direct synth.
+    body.type = "lowshelf";
+    body.frequency.value = 145;
+    body.gain.value = 1.35;
+    air.type = "highshelf";
+    air.frequency.value = 5_200;
+    air.gain.value = -2.4;
     compressor.threshold.value = -18;
     compressor.knee.value = 16;
     compressor.ratio.value = 3;
     compressor.attack.value = 0.004;
     compressor.release.value = 0.22;
-    master.connect(compressor).connect(this.context.destination);
+    master.connect(body).connect(air).connect(compressor).connect(this.context.destination);
+    this.outputNodes = [body, air, compressor];
     this.master = master;
     return this.context;
   }
@@ -207,8 +287,8 @@ export class ChordPreviewPlayer {
 
       source.buffer = createPluckedStringBuffer(context, frequency, noteDuration + 0.35, index);
       warmth.type = "lowpass";
-      warmth.frequency.value = Math.min(6200, 2800 + frequency * 4.4);
-      warmth.Q.value = 0.72;
+      warmth.frequency.value = Math.min(5_800, 3_600 + frequency * 2.15);
+      warmth.Q.value = 0.56;
       panner.pan.value = Math.max(-0.28, Math.min(0.28, (index - (notes.length - 1) / 2) * 0.1));
       voiceGain.gain.setValueAtTime(0.0001, noteStart);
       voiceGain.gain.exponentialRampToValueAtTime(velocity, noteStart + 0.007);
@@ -244,6 +324,8 @@ export class ChordPreviewPlayer {
       master.gain.setValueAtTime(Math.max(0.0001, master.gain.value), now);
       master.gain.exponentialRampToValueAtTime(0.0001, now + 0.035);
       const sources = [...this.sources];
+      const outputNodes = [...this.outputNodes];
+      this.outputNodes = [];
       setTimeout(() => {
         sources.forEach((source) => {
           try {
@@ -253,6 +335,7 @@ export class ChordPreviewPlayer {
           }
         });
         master.disconnect();
+        outputNodes.forEach((node) => node.disconnect());
       }, 55);
     }
     this.master = undefined;
