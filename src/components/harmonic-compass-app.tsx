@@ -40,6 +40,7 @@ import {
   MicrophoneChordListener,
   ResponsiveBand,
   type ChordPreviewPattern,
+  type ListeningState,
 } from "@/audio";
 import {
   formatChord,
@@ -56,7 +57,7 @@ import {
   saveSong,
   seedSongIds,
 } from "@/storage";
-import type { AssistanceLevel, EmotionalIntent, SongDocument } from "@/types/music";
+import type { AssistanceLevel, ChordSymbol, EmotionalIntent, SongDocument } from "@/types/music";
 
 type Space = "play" | "build" | "grow" | "library";
 type InputMode = "idle" | "listening" | "demo" | "manual";
@@ -348,6 +349,65 @@ const chordMap: Record<string, Suggestion[]> = {
 };
 
 const defaultSuggestions = chordMap.C;
+const pitchClassByName: Record<string, number> = {
+  C: 0,
+  "C#": 1,
+  Db: 1,
+  D: 2,
+  "D#": 3,
+  Eb: 3,
+  E: 4,
+  F: 5,
+  "F#": 6,
+  Gb: 6,
+  G: 7,
+  "G#": 8,
+  Ab: 8,
+  A: 9,
+  "A#": 10,
+  Bb: 10,
+  B: 11,
+};
+
+function parseChordName(name: string): ChordSymbol {
+  const [symbol, bassName] = name.replaceAll("♭", "b").replaceAll("♯", "#").split("/");
+  const match = /^([A-G](?:#|b)?)(.*)$/.exec(symbol ?? "C");
+  const rootName = match?.[1] ?? "C";
+  const suffix = match?.[2] ?? "";
+  const quality = suffix.includes("dim")
+    ? "diminished"
+    : suffix.includes("maj7")
+      ? "major7"
+      : suffix.includes("m7")
+        ? "minor7"
+        : suffix === "m"
+          ? "minor"
+          : suffix.includes("7")
+            ? "dominant7"
+            : suffix.includes("sus2")
+              ? "sus2"
+              : suffix.includes("sus4")
+                ? "sus4"
+                : "major";
+  const root = pitchClassByName[rootName] ?? 0;
+  const bass = bassName ? pitchClassByName[bassName] : undefined;
+  return bass === undefined ? { root, quality } : { root, quality, bass };
+}
+
+function cloneProgression(progression: ProgressionChord[]): ProgressionChord[] {
+  return progression.map((chord) => ({ ...chord }));
+}
+
+function buildSectionsForProgression(progression: ProgressionChord[]): BuildSection[] {
+  return [
+    {
+      id: "session-idea",
+      name: "Your idea",
+      color: "sage",
+      chords: cloneProgression(progression),
+    },
+  ];
+}
 
 const emotionalIntents: { id: EmotionalIntent; label: string; icon: string }[] = [
   { id: "hopeful", label: "More hopeful", icon: "↗" },
@@ -443,7 +503,15 @@ function BrandMark({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function Onboarding({ onListen, onDemo }: { onListen: () => void; onDemo: () => void }) {
+function Onboarding({
+  onListen,
+  onDemo,
+  onManual,
+}: {
+  onListen: () => void;
+  onDemo: () => void;
+  onManual: () => void;
+}) {
   return (
     <main className="entry-screen">
       <header className="entry-header">
@@ -474,8 +542,7 @@ function Onboarding({ onListen, onDemo }: { onListen: () => void; onDemo: () => 
             after playing a chord.
           </h1>
           <p className="entry-description">
-            Start playing. We’ll hear the harmony, map where it can go, and keep your idea moving
-            while you remain the musician.
+            Play one clean chord. We’ll name it, show you how it feels, and suggest one next move.
           </p>
           <div className="entry-actions">
             <button className="primary-button primary-button--large" onClick={onListen}>
@@ -483,6 +550,9 @@ function Onboarding({ onListen, onDemo }: { onListen: () => void; onDemo: () => 
             </button>
             <button className="secondary-button secondary-button--large" onClick={onDemo}>
               <Play size={18} fill="currentColor" /> Play guided showcase
+            </button>
+            <button className="text-button entry-manual-button" onClick={onManual}>
+              Enter chords manually <ArrowRight size={15} />
             </button>
           </div>
           <p className="privacy-note">
@@ -716,7 +786,7 @@ function HarmonicCompass({
   setSelectedSuggestion,
   assistance,
 }: {
-  currentChord: ProgressionChord;
+  currentChord: ProgressionChord | null;
   inputMode: InputMode;
   suggestions: Suggestion[];
   selectedSuggestion: number | null;
@@ -769,7 +839,9 @@ function HarmonicCompass({
           assistance={assistance}
         />
       ))}
-      <div className={`current-chord ${inputMode !== "idle" ? "is-live" : ""}`}>
+      <div
+        className={`current-chord ${inputMode !== "idle" ? "is-live" : ""} ${!currentChord ? "current-chord--waiting" : ""}`}
+      >
         <span className="current-chord__status">
           <i />
           {inputMode === "demo"
@@ -780,12 +852,21 @@ function HarmonicCompass({
                 ? "LISTENING"
                 : "PAUSED"}
         </span>
-        <strong>{currentChord.name}</strong>
-        {assistance !== "beginner" && <em>{currentChord.numeral} · TONIC</em>}
-        <div className="current-chord__meter" aria-label="Recognition confidence 96%">
-          <span style={{ width: "96%" }} />
-        </div>
-        <small>96% confident</small>
+        {currentChord ? (
+          <>
+            <strong>{currentChord.name}</strong>
+            {assistance !== "beginner" && <em>{currentChord.numeral} · HARMONIC CENTER</em>}
+            <div className="current-chord__meter" aria-label="Recognition confidence 96%">
+              <span style={{ width: "96%" }} />
+            </div>
+            <small>96% confident</small>
+          </>
+        ) : (
+          <>
+            <strong>—</strong>
+            <p>Play one clean chord and let it ring.</p>
+          </>
+        )}
       </div>
       {activeSuggestion && (
         <div className="suggestion-inspector" role="status">
@@ -836,6 +917,7 @@ function HarmonicCompass({
 function SessionControls({
   inputMode,
   setInputMode,
+  listeningState,
   assistance,
   setAssistance,
   currentChord,
@@ -843,9 +925,10 @@ function SessionControls({
 }: {
   inputMode: InputMode;
   setInputMode: (mode: InputMode) => void;
+  listeningState: ListeningState;
   assistance: AssistanceLevel;
   setAssistance: (level: AssistanceLevel) => void;
-  currentChord: ProgressionChord;
+  currentChord: ProgressionChord | null;
   setCurrentChordName: (name: string) => void;
 }) {
   const [manualOpen, setManualOpen] = useState(false);
@@ -855,9 +938,18 @@ function SessionControls({
         <button
           className={`signal-control__button ${inputMode !== "idle" ? "is-active" : ""}`}
           onClick={() => setInputMode(inputMode === "idle" ? "listening" : "idle")}
+          disabled={listeningState === "requesting"}
         >
-          {inputMode === "idle" ? <Mic2 size={17} /> : <Pause size={17} />}
-          {inputMode === "idle" ? "Start listening" : "Pause"}
+          {inputMode === "idle" || listeningState === "requesting" ? (
+            <Mic2 size={17} />
+          ) : (
+            <Pause size={17} />
+          )}
+          {inputMode === "idle"
+            ? "Start listening"
+            : listeningState === "requesting"
+              ? "Requesting microphone…"
+              : "Pause"}
         </button>
         <span
           className={`signal-control__level ${inputMode !== "idle" ? "is-active" : ""}`}
@@ -892,7 +984,7 @@ function SessionControls({
             {["C", "Dm", "Em", "F", "G", "Am", "Fm", "E7"].map((chord) => (
               <button
                 key={chord}
-                className={currentChord.name === chord ? "is-active" : ""}
+                className={currentChord?.name === chord ? "is-active" : ""}
                 onClick={() => {
                   setCurrentChordName(chord);
                   setInputMode("manual");
@@ -1037,8 +1129,12 @@ function TakeRibbon({
     <section className="take-ribbon" aria-label="Captured progression">
       <div className="take-ribbon__heading">
         <div>
-          <span className="section-kicker">LIVE TAKE · 01:12</span>
-          <strong>Your idea</strong>
+          <span className="section-kicker">
+            {progression.length ? "LIVE TAKE" : "READY TO CAPTURE"}
+          </span>
+          <strong>
+            {progression.length ? "Your idea" : "Play a chord to start your first idea"}
+          </strong>
         </div>
         <div className="take-ribbon__transport">
           <button
@@ -1063,20 +1159,28 @@ function TakeRibbon({
       </div>
       <div className="take-ribbon__timeline">
         <div className="take-ribbon__track">
-          {progression.map((chord, index) => (
-            <button
-              key={chord.id}
-              className={`${activeIndex === index ? "is-active" : ""} ${chord.color === "borrowed" ? "is-borrowed" : ""}`}
-              onClick={() => setActiveIndex(index)}
-            >
-              <span>{chord.numeral}</span>
-              <strong>{chord.name}</strong>
-              <small>{chord.beats} beats</small>
-            </button>
-          ))}
-          <button className="take-ribbon__add" aria-label="Add chord" onClick={onAddChord}>
-            <Plus size={18} />
-          </button>
+          {progression.length === 0 ? (
+            <div className="take-ribbon__empty">
+              Your confirmed chords will appear here as you play.
+            </div>
+          ) : (
+            <>
+              {progression.map((chord, index) => (
+                <button
+                  key={chord.id}
+                  className={`${activeIndex === index ? "is-active" : ""} ${chord.color === "borrowed" ? "is-borrowed" : ""}`}
+                  onClick={() => setActiveIndex(index)}
+                >
+                  <span>{chord.numeral}</span>
+                  <strong>{chord.name}</strong>
+                  <small>{chord.beats} beats</small>
+                </button>
+              ))}
+              <button className="take-ribbon__add" aria-label="Add chord" onClick={onAddChord}>
+                <Plus size={18} />
+              </button>
+            </>
+          )}
         </div>
         <div className="timeline-ticks" aria-hidden="true">
           {Array.from({ length: 24 }).map((_, index) => (
@@ -1084,14 +1188,18 @@ function TakeRibbon({
           ))}
         </div>
       </div>
-      <button className="take-ribbon__build" onClick={onOpenBuild}>
+      <button
+        className="take-ribbon__build"
+        onClick={onOpenBuild}
+        disabled={progression.length === 0}
+      >
         Open in Build <ArrowRight size={15} />
       </button>
     </section>
   );
 }
 
-function BandControl() {
+function BandControl({ progression, available }: { progression: string[]; available: boolean }) {
   const [enabled, setEnabled] = useState(false);
   const [density, setDensity] = useState<1 | 2 | 3>(2);
   const bandRef = useRef<ResponsiveBand | null>(null);
@@ -1110,11 +1218,12 @@ function BandControl() {
       bpm: 96,
       style: "open-road",
       density: nextDensity,
-      progression: SHOWCASE_PROGRESSION,
+      progression: progression.length ? progression.map(parseChordName) : SHOWCASE_PROGRESSION,
     });
   };
 
   const toggleBand = async () => {
+    if (!available) return;
     if (enabled) {
       setEnabled(false);
       await bandRef.current?.stop();
@@ -1141,7 +1250,13 @@ function BandControl() {
         </span>
         <div>
           <strong>Responsive band</strong>
-          <small>{enabled ? "Open Road · Following you" : "Off · Follows your timing"}</small>
+          <small>
+            {enabled
+              ? "Open Road · Following you"
+              : available
+                ? "Off · Follows your timing"
+                : "Play a chord to enable the band"}
+          </small>
         </div>
       </div>
       {enabled && (
@@ -1162,6 +1277,7 @@ function BandControl() {
         onClick={() => void toggleBand()}
         aria-label={`Turn responsive band ${enabled ? "off" : "on"}`}
         aria-pressed={enabled}
+        disabled={!available}
       >
         <span />
         <em>{enabled ? "On" : "Off"}</em>
@@ -1173,19 +1289,27 @@ function BandControl() {
 function PlaySpace({
   inputMode,
   setInputMode,
+  listeningState,
   onMentor,
   onMenu,
   onProfile,
   onOpenBuild,
   liveChord,
+  capturedProgression,
+  setCapturedProgression,
 }: {
   inputMode: InputMode;
   setInputMode: (mode: InputMode) => void;
+  listeningState: ListeningState;
   onMentor: () => void;
   onMenu: () => void;
   onProfile: () => void;
   onOpenBuild: () => void;
   liveChord: string | null;
+  capturedProgression: ProgressionChord[];
+  setCapturedProgression: (
+    update: ProgressionChord[] | ((current: ProgressionChord[]) => ProgressionChord[]),
+  ) => void;
 }) {
   const [assistance, setAssistance] = useState<AssistanceLevel>("developing");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -1193,16 +1317,18 @@ function PlaySpace({
   const [selectedSuggestion, setSelectedSuggestion] = useState<number | null>(null);
   const [selectedIntent, setSelectedIntent] = useState<EmotionalIntent | null>(null);
   const [isPlaying, setIsPlaying] = useState(inputMode === "demo");
-  const [capturedProgression, setCapturedProgression] = useState<ProgressionChord[]>(
-    inputMode === "demo" ? demoProgression : [],
-  );
+
   const takePreviewRef = useRef<ChordPreviewPlayer | null>(null);
   const currentChord = manualChord
     ? { id: "manual", name: manualChord, numeral: manualChord.endsWith("m") ? "ii" : "I", beats: 4 }
     : inputMode === "listening" && liveChord
       ? { id: "live", name: liveChord, numeral: liveChord.endsWith("m") ? "vi" : "I", beats: 4 }
-      : demoProgression[activeIndex];
-  const suggestions = chordMap[currentChord.name] ?? defaultSuggestions;
+      : inputMode === "demo"
+        ? demoProgression[activeIndex]
+        : inputMode === "idle" && capturedProgression.length > 0
+          ? (capturedProgression[Math.min(activeIndex, capturedProgression.length - 1)] ?? null)
+          : null;
+  const suggestions = currentChord ? (chordMap[currentChord.name] ?? defaultSuggestions) : [];
 
   useEffect(
     () => () => {
@@ -1228,7 +1354,7 @@ function PlaySpace({
       });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [inputMode, liveChord]);
+  }, [inputMode, liveChord, setCapturedProgression]);
 
   useEffect(() => {
     if (inputMode !== "demo" || !isPlaying) return;
@@ -1251,12 +1377,14 @@ function PlaySpace({
       <div className="play-statusbar">
         <div className="key-status">
           <span>LIKELY KEY</span>
-          <strong>C major</strong>
-          <em>87%</em>
+          <strong>
+            {inputMode === "demo" || currentChord ? "C major" : "Waiting for a chord"}
+          </strong>
+          <em>{inputMode === "demo" || currentChord ? "87%" : "—"}</em>
         </div>
         <div className="tempo-status">
           <Gauge size={15} />
-          <strong>96</strong>
+          <strong>{inputMode === "demo" || currentChord ? "96" : "—"}</strong>
           <span>BPM</span>
           <i />
           <span>4/4</span>
@@ -1266,12 +1394,39 @@ function PlaySpace({
           {inputMode === "demo"
             ? "Guided showcase"
             : inputMode === "manual"
-              ? "Manual mode"
-              : "Live session"}
+              ? currentChord
+                ? "Chord selected"
+                : "Choose your first chord"
+              : listeningState === "requesting"
+                ? "Microphone permission"
+                : currentChord
+                  ? "Chord confirmed"
+                  : "Waiting for your first chord"}
         </div>
       </div>
+      {(inputMode === "listening" || inputMode === "manual") &&
+        !currentChord &&
+        capturedProgression.length === 0 && (
+          <section className="first-chord-guide" aria-label="First chord">
+            <div className="first-chord-guide__signal">
+              <Mic2 size={17} />
+            </div>
+            <div>
+              <span className="section-kicker">FIRST STEP</span>
+              <strong>
+                {inputMode === "manual" ? "Choose your first chord" : "Play one clean chord"}
+              </strong>
+              <p>
+                {inputMode === "manual"
+                  ? "Pick a chord to start your first idea."
+                  : "Let it ring for two seconds. We’ll map where the music can go next."}
+              </p>
+            </div>
+          </section>
+        )}
       <SessionControls
         inputMode={inputMode}
+        listeningState={listeningState}
         setInputMode={(mode) => {
           if (mode !== "manual") setManualChord(null);
           if (mode === "demo" && capturedProgression.length === 0) {
@@ -1328,18 +1483,28 @@ function PlaySpace({
         </section>
         <aside className="play-sidebar">
           <EmotionalTray selectedIntent={selectedIntent} setSelectedIntent={setSelectedIntent} />
-          <BandControl />
+          <BandControl
+            progression={capturedProgression.map((chord) => chord.name)}
+            available={Boolean(currentChord)}
+          />
           <button
             className="context-insight"
             onClick={onMentor}
-            aria-label="Ask Compass about the borrowed chord"
+            aria-label="Ask Compass about your current harmony"
+            disabled={!currentChord}
           >
             <span>
               <WandSparkles size={16} />
             </span>
             <div>
-              <strong>You just borrowed a chord.</strong>
-              <p>Fm came from C minor, adding a bittersweet pull before home.</p>
+              <strong>
+                {currentChord ? "Ask about this harmony." : "Compass Coach is ready."}
+              </strong>
+              <p>
+                {currentChord
+                  ? "Get a plain-language explanation of what you just heard."
+                  : "Play a chord first, then ask why it works."}
+              </p>
             </div>
             <ArrowRight size={16} />
           </button>
@@ -1413,13 +1578,26 @@ function BuildSpace({
   onMentor,
   onMenu,
   onProfile,
+  startingProgression = [],
+  startingSections,
+  sessionMode = false,
+  onSectionsChange,
 }: {
   onMentor: () => void;
   onMenu: () => void;
   onProfile: () => void;
+  startingProgression?: ProgressionChord[];
+  startingSections?: BuildSection[];
+  sessionMode?: boolean;
+  onSectionsChange?: (sections: BuildSection[]) => void;
 }) {
   const [sections, setSections] = useState<BuildSection[]>(() =>
-    initialBuildSections.map((item) => ({
+    (startingSections?.length
+      ? startingSections
+      : sessionMode && startingProgression.length
+        ? buildSectionsForProgression(startingProgression)
+        : initialBuildSections
+    ).map((item) => ({
       ...item,
       chords: item.chords.map((chord) => ({ ...chord })),
     })),
@@ -1447,6 +1625,7 @@ function BuildSpace({
     setUndoHistory((current) => [...current.slice(-19), sections]);
     setRedoHistory([]);
     setSections(next);
+    onSectionsChange?.(next);
     setFeedback(message);
   };
 
@@ -1465,6 +1644,7 @@ function BuildSpace({
     setRedoHistory((current) => [sections, ...current].slice(0, 20));
     setUndoHistory((current) => current.slice(0, -1));
     setSections(previous);
+    onSectionsChange?.(previous);
     setActiveSection((current) => Math.min(current, previous.length - 1));
     setFeedback("Undid the last arrangement change.");
   };
@@ -1475,6 +1655,7 @@ function BuildSpace({
     setUndoHistory((current) => [...current, sections].slice(-20));
     setRedoHistory((current) => current.slice(1));
     setSections(next);
+    onSectionsChange?.(next);
     setActiveSection((current) => Math.min(current, next.length - 1));
     setFeedback("Restored the arrangement change.");
   };
@@ -1555,19 +1736,57 @@ function BuildSpace({
     setSaveState("saving");
     try {
       const database = getDatabase();
-      await ensureSeeded(database);
-      const song = await database.songs.get(seedSongIds.borrowedLight);
-      if (!song) throw new Error("seed-song-missing");
-      const activeVersion = song.versions.find((version) => version.id === song.activeVersionId);
-      if (!activeVersion) throw new Error("active-version-missing");
       const timestamp = new Date();
-      const version = {
-        ...activeVersion,
-        id: crypto.randomUUID(),
-        label: `Saved · ${timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
-        createdAt: timestamp.toISOString(),
-      };
-      await saveSong(addVersion(song, version, { activate: false }), database);
+      if (sessionMode) {
+        const versionId = crypto.randomUUID();
+        const userSong: SongDocument = {
+          id: crypto.randomUUID(),
+          schemaVersion: 1,
+          title: "Your first idea",
+          status: "idea",
+          bpm: 96,
+          key: {
+            primary: { tonic: 0, mode: "major", confidence: 0.35 },
+            alternatives: [],
+            locked: false,
+          },
+          activeVersionId: versionId,
+          versions: [
+            {
+              id: versionId,
+              label: "First capture",
+              createdAt: timestamp.toISOString(),
+              sections: sections.map((item) => ({
+                id: crypto.randomUUID(),
+                name: item.name,
+                type: "idea" as const,
+                chords: item.chords.map((chord) => ({
+                  id: crypto.randomUUID(),
+                  chord: parseChordName(chord.name),
+                  beats: chord.beats,
+                })),
+              })),
+            },
+          ],
+          tags: ["session"],
+          createdAt: timestamp.toISOString(),
+          updatedAt: timestamp.toISOString(),
+        };
+        await saveSong(userSong, database);
+      } else {
+        await ensureSeeded(database);
+        const song = await database.songs.get(seedSongIds.borrowedLight);
+        if (!song) throw new Error("seed-song-missing");
+        const activeVersion = song.versions.find((version) => version.id === song.activeVersionId);
+        if (!activeVersion) throw new Error("active-version-missing");
+        const version = {
+          ...activeVersion,
+          id: crypto.randomUUID(),
+          label: `Saved · ${timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
+          createdAt: timestamp.toISOString(),
+        };
+        await saveSong(addVersion(song, version, { activate: false }), database);
+      }
       setSaveState("saved");
       setFeedback("Version saved locally.");
       window.setTimeout(() => setSaveState("idle"), 2400);
@@ -1632,7 +1851,7 @@ function BuildSpace({
     <div className="build-space">
       <WorkspaceHeader
         title="Build"
-        subtitle="Borrowed Light · saved locally"
+        subtitle={sessionMode ? "Your idea · saved locally" : "Borrowed Light · saved locally"}
         onMenu={onMenu}
         onMentor={onMentor}
         onProfile={onProfile}
@@ -1641,7 +1860,7 @@ function BuildSpace({
         <header className="build-toolbar">
           <div className="song-title-control">
             <span className="section-kicker">SONG WORKSPACE</span>
-            <h1>Borrowed Light</h1>
+            <h1>{sessionMode ? "Your first idea" : "Borrowed Light"}</h1>
             <button
               className="title-menu"
               aria-label="Song options"
@@ -1907,10 +2126,12 @@ function GrowSpace({
   onMentor,
   onMenu,
   onProfile,
+  hasSessionHistory,
 }: {
   onMentor: () => void;
   onMenu: () => void;
   onProfile: () => void;
+  hasSessionHistory: boolean;
 }) {
   const [started, setStarted] = useState(false);
   const [answer, setAnswer] = useState<string | null>(null);
@@ -1949,21 +2170,24 @@ function GrowSpace({
             <span className="section-kicker">MADE FROM YOUR MUSIC</span>
             <h1>Find home without the map.</h1>
             <p>
-              You’ve used the minor iv sound three times this week. Today, let’s hear where it wants
-              to land.
+              {hasSessionHistory
+                ? "Your recent ideas are shaping this challenge. Today, let’s hear where the minor iv wants to land."
+                : "Make a few chords in Play and your next challenge will come from what you discover."}
             </p>
           </div>
           <div className="grow-streak">
             <span>YOUR MOMENTUM</span>
-            <strong>4</strong>
-            <em>day streak</em>
-            <div>
-              {["M", "T", "W", "T", "F", "S", "S"].map((day, index) => (
-                <i key={`${day}-${index}`} className={index < 4 ? "is-complete" : ""}>
-                  {index < 4 ? <Check size={10} /> : day}
-                </i>
-              ))}
-            </div>
+            <strong>{hasSessionHistory ? "1" : "—"}</strong>
+            <em>{hasSessionHistory ? "idea started" : "No streak yet"}</em>
+            {hasSessionHistory && (
+              <div>
+                {["M", "T", "W", "T", "F", "S", "S"].map((day, index) => (
+                  <i key={`${day}-${index}`} className={index === 0 ? "is-complete" : ""}>
+                    {index === 0 ? <Check size={10} /> : day}
+                  </i>
+                ))}
+              </div>
+            )}
           </div>
         </section>
         <section className={`challenge-stage ${started ? "is-started" : ""}`}>
@@ -2451,6 +2675,7 @@ function UtilityDrawer({
   setHighContrast,
   reducedMotion,
   setReducedMotion,
+  hasSessionHistory,
 }: {
   panel: UtilityPanel;
   onClose: () => void;
@@ -2458,6 +2683,7 @@ function UtilityDrawer({
   setHighContrast: (value: boolean) => void;
   reducedMotion: boolean;
   setReducedMotion: (value: boolean) => void;
+  hasSessionHistory: boolean;
 }) {
   if (!panel) return null;
   const settings = panel === "settings";
@@ -2469,7 +2695,13 @@ function UtilityDrawer({
           <span>{settings ? <Settings2 size={18} /> : <Guitar size={18} />}</span>
           <div>
             <strong>{settings ? "Settings" : "Your musical ear"}</strong>
-            <small>{settings ? "Local preferences" : "Developing player"}</small>
+            <small>
+              {settings
+                ? "Local preferences"
+                : hasSessionHistory
+                  ? "Developing player"
+                  : "Ready to begin"}
+            </small>
           </div>
           <button className="icon-button" aria-label={`Close ${panel}`} onClick={onClose}>
             <X size={18} />
@@ -2517,30 +2749,43 @@ function UtilityDrawer({
           </div>
         ) : (
           <div className="utility-drawer__body profile-summary">
-            <div className="profile-summary__level">
-              <span>04</span>
-              <div>
-                <strong>Finding color</strong>
-                <small>4 day creative streak</small>
-              </div>
-            </div>
-            {[
-              ["V → I resolution", 86, "Strong"],
-              ["Major-key movement", 72, "Growing"],
-              ["Borrowed harmony", 48, "Exploring"],
-              ["Section contrast", 34, "Next up"],
-            ].map(([skill, progress, label]) => (
-              <div className="profile-skill" key={String(skill)}>
-                <span>
-                  <strong>{skill}</strong>
-                  <small>{label}</small>
-                </span>
-                <i>
-                  <b style={{ width: `${progress}%` }} />
-                </i>
-              </div>
-            ))}
-            <p>Your next best step: hear the minor iv resolve without looking at the map.</p>
+            {hasSessionHistory ? (
+              <>
+                <div className="profile-summary__level">
+                  <span>04</span>
+                  <div>
+                    <strong>Finding color</strong>
+                    <small>Your progress is growing from your ideas</small>
+                  </div>
+                </div>
+                {[
+                  ["V → I resolution", 86, "Strong"],
+                  ["Major-key movement", 72, "Growing"],
+                  ["Borrowed harmony", 48, "Exploring"],
+                  ["Section contrast", 34, "Next up"],
+                ].map(([skill, progress, label]) => (
+                  <div className="profile-skill" key={String(skill)}>
+                    <span>
+                      <strong>{skill}</strong>
+                      <small>{label}</small>
+                    </span>
+                    <i>
+                      <b style={{ width: `${progress}%` }} />
+                    </i>
+                  </div>
+                ))}
+                <p>Your next best step: hear the minor iv resolve without looking at the map.</p>
+              </>
+            ) : (
+              <>
+                <span className="section-kicker">YOUR FIRST STEP</span>
+                <h3>Make one idea in Play.</h3>
+                <p>
+                  Your musical profile will grow from the chords you choose and the routes you
+                  explore.
+                </p>
+              </>
+            )}
           </div>
         )}
       </aside>
@@ -2705,6 +2950,11 @@ export function HarmonicCompassApp({ initialShowcase = false }: { initialShowcas
   const [reducedMotion, setReducedMotion] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [liveChord, setLiveChord] = useState<string | null>(null);
+  const [listeningState, setListeningState] = useState<ListeningState>("idle");
+  const [sessionProgression, setSessionProgression] = useState<ProgressionChord[]>(() =>
+    initialShowcase ? cloneProgression(demoProgression) : [],
+  );
+  const [buildSections, setBuildSections] = useState<BuildSection[] | null>(null);
   const [listenNotice, setListenNotice] = useState<string | null>(null);
   const listenerRef = useRef<MicrophoneChordListener | null>(null);
 
@@ -2752,18 +3002,25 @@ export function HarmonicCompassApp({ initialShowcase = false }: { initialShowcas
   const changeInputMode = (mode: InputMode) => {
     setInputMode(mode);
     if (mode !== "listening") {
+      setListeningState("idle");
       void listenerRef.current?.stop();
       listenerRef.current = null;
       return;
     }
+    setListeningState("requesting");
     void listenerRef.current?.stop();
     const listener = new MicrophoneChordListener({
       onConfirmed: (event) => {
         setLiveChord(formatChord(event.primary.chord));
+        setListeningState("listening");
         setListenNotice(null);
       },
       onHealth: (health) => {
+        setListeningState(health.state);
         if (health.message) setListenNotice(health.message);
+        if (["denied", "unsupported", "error"].includes(health.state)) {
+          setInputMode("idle");
+        }
       },
     });
     listenerRef.current = listener;
@@ -2780,6 +3037,10 @@ export function HarmonicCompassApp({ initialShowcase = false }: { initialShowcas
         onDemo={() => {
           setEntered(true);
           changeInputMode("demo");
+        }}
+        onManual={() => {
+          setEntered(true);
+          changeInputMode("manual");
         }}
       />
     );
@@ -2801,11 +3062,20 @@ export function HarmonicCompassApp({ initialShowcase = false }: { initialShowcas
           <PlaySpace
             inputMode={inputMode}
             setInputMode={changeInputMode}
+            listeningState={listeningState}
             onMentor={() => setMentorOpen(true)}
             onMenu={() => setMobileOpen(true)}
             onProfile={() => setUtilityPanel("profile")}
-            onOpenBuild={() => setActiveSpace("build")}
+            onOpenBuild={() => {
+              if (sessionProgression.length === 0) return;
+              setBuildSections(
+                (current) => current ?? buildSectionsForProgression(sessionProgression),
+              );
+              setActiveSpace("build");
+            }}
             liveChord={liveChord}
+            capturedProgression={sessionProgression}
+            setCapturedProgression={setSessionProgression}
           />
         )}
         {activeSpace === "build" && (
@@ -2813,6 +3083,10 @@ export function HarmonicCompassApp({ initialShowcase = false }: { initialShowcas
             onMentor={() => setMentorOpen(true)}
             onMenu={() => setMobileOpen(true)}
             onProfile={() => setUtilityPanel("profile")}
+            startingProgression={sessionProgression}
+            startingSections={buildSections ?? undefined}
+            sessionMode={!initialShowcase && sessionProgression.length > 0}
+            onSectionsChange={setBuildSections}
           />
         )}
         {activeSpace === "grow" && (
@@ -2820,6 +3094,7 @@ export function HarmonicCompassApp({ initialShowcase = false }: { initialShowcas
             onMentor={() => setMentorOpen(true)}
             onMenu={() => setMobileOpen(true)}
             onProfile={() => setUtilityPanel("profile")}
+            hasSessionHistory={sessionProgression.length > 0}
           />
         )}
         {activeSpace === "library" && (
@@ -2838,6 +3113,7 @@ export function HarmonicCompassApp({ initialShowcase = false }: { initialShowcas
         highContrast={highContrast}
         setHighContrast={setHighContrast}
         reducedMotion={reducedMotion}
+        hasSessionHistory={sessionProgression.length > 0}
         setReducedMotion={setReducedMotion}
       />
       {listenNotice && (

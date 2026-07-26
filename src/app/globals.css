@@ -3567,3 +3567,79 @@ a {
   right: 26%;
   bottom: 2%;
 }
+
+/* First-musical-win states */
+.entry-manual-button {
+  align-self: center;
+  margin-top: 4px;
+}
+.first-chord-guide {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: 540px;
+  margin: 0 auto 18px;
+  padding: 14px 18px;
+  border: 1px solid rgba(199, 173, 116, 0.28);
+  border-radius: 16px;
+  background: rgba(199, 173, 116, 0.08);
+}
+.first-chord-guide__signal {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--gold, #c7ad74);
+  background: rgba(199, 173, 116, 0.14);
+}
+.first-chord-guide .section-kicker {
+  display: block;
+  margin-bottom: 3px;
+}
+.first-chord-guide strong {
+  display: block;
+  font-size: 15px;
+}
+.first-chord-guide p {
+  margin: 3px 0 0;
+  color: var(--muted, #9b968c);
+  font-size: 13px;
+}
+.current-chord--waiting > strong {
+  color: var(--muted, #9b968c);
+}
+.current-chord--waiting > p {
+  max-width: 180px;
+  margin: 8px auto 0;
+  color: var(--muted, #9b968c);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.take-ribbon__empty {
+  display: grid;
+  min-height: 64px;
+  place-items: center;
+  padding: 12px 18px;
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  color: var(--muted, #9b968c);
+  font-size: 13px;
+}
+.take-ribbon__build:disabled,
+.context-insight:disabled,
+.toggle:disabled,
+.signal-control__button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+@media (max-width: 640px) {
+  .first-chord-guide {
+    margin-inline: 12px;
+  }
+  .entry-manual-button {
+    width: 100%;
+    justify-content: center;
+  }
+}

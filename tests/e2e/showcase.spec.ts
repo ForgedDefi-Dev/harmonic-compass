@@ -112,3 +112,29 @@ test("guitar previews and workspace controls produce visible state changes", asy
   await page.getByRole("button", { name: "More options for Borrowed Light" }).click();
   await expect(page.getByRole("button", { name: "Preview guitar" })).toBeVisible();
 });
+
+test("cold start turns one manual chord into a Build idea", async ({ page }) => {
+  await page.goto("/");
+  await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
+  await expect(page.getByRole("button", { name: "Start listening" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Enter chords manually" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Enter chords manually" }).click();
+  await expect(page.getByRole("region", { name: "First chord" })).toContainText(
+    /Play one clean chord|Choose your first chord/,
+  );
+  await expect(page.locator(".session-status")).toContainText("Choose your first chord");
+
+  await page.getByRole("button", { name: "Manual", exact: true }).click();
+  await page
+    .locator(".manual-chord-picker")
+    .getByRole("button", { name: "C", exact: true })
+    .click();
+  await expect(page.getByRole("region", { name: "Captured progression" })).toContainText("C");
+  await expect(page.getByText("Chord selected")).toBeVisible();
+
+  await page.getByRole("button", { name: "Open in Build" }).click();
+  await expect(page.getByRole("heading", { name: "Your first idea" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Song map" })).toContainText("Your idea");
+  await expect(page.locator(".chord-block").first()).toContainText("C");
+});
