@@ -3,6 +3,9 @@ import type { AnalysisResult } from "./analysis";
 import { ChordStabilizer, type ChordObservation } from "./stabilizer";
 import { estimateTempo } from "./tempo";
 
+const DEFAULT_WORKLET_URL = "/audio/pcm-worklet.js";
+const DEFAULT_WORKER_URL = "/audio/chord-worker.js";
+
 export type ListeningState =
   "idle" | "requesting" | "listening" | "suspended" | "denied" | "unsupported" | "error";
 
@@ -78,13 +81,11 @@ export class MicrophoneChordListener {
       });
       this.context = new AudioContext({ latencyHint: "interactive" });
       await this.context.resume();
-      await this.context.audioWorklet.addModule(
-        this.options.workletUrl ?? new URL("./pcm-worklet.ts", import.meta.url),
-      );
+      await this.context.audioWorklet.addModule(this.options.workletUrl ?? DEFAULT_WORKLET_URL);
 
       this.worker =
         this.options.workerFactory?.() ??
-        new Worker(new URL("./chord-worker.ts", import.meta.url), {
+        new Worker(DEFAULT_WORKER_URL, {
           type: "module",
           name: "harmonic-compass-analysis",
         });
@@ -164,9 +165,23 @@ export class MicrophoneChordListener {
           "Microphone access was not granted. Demo and manual input remain available.",
         );
       } else {
+        const errorName =
+          error instanceof DOMException
+            ? error.name
+            : error instanceof Error
+              ? error.name
+              : "UnknownError";
+        const message =
+          errorName === "NotReadableError"
+            ? "Microphone access was granted, but no usable input is available. Check that another app is not using the mic, then try again."
+            : errorName === "AbortError"
+              ? "The browser stopped microphone startup. Try again, or choose Demo or Manual input."
+              : errorName === "NotSupportedError"
+                ? "This browser cannot load live audio analysis. Try the latest Chrome, Edge, or Safari."
+                : "The live audio engine could not start. Refresh the page and try again, or choose Demo or Manual input.";
         this.setState(
           "error",
-          "The microphone could not be started. Check the input and try again.",
+          `${message} (${errorName})`,
         );
       }
     }

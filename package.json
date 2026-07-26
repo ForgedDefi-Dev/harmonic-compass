@@ -8,6 +8,7 @@
     "node": ">=22.0.0"
   },
   "scripts": {
+    "prebuild": "node scripts/build-audio-runtimes.mjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

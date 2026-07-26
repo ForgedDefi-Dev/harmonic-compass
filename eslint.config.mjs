@@ -11,5 +11,6 @@ export default defineConfig([
     "playwright-report/**",
     "test-results/**",
     "public/serwist/**",
+    "public/audio/*.js",
   ]),
 ]);
