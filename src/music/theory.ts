@@ -50,6 +50,22 @@ export function qualitySuffix(quality: ChordQuality): string {
       return "maj7";
     case "minor7":
       return "m7";
+    case "major6":
+      return "6";
+    case "minor6":
+      return "m6";
+    case "add9":
+      return "add9";
+    case "minorAdd9":
+      return "m(add9)";
+    case "dominant9":
+      return "9";
+    case "major9":
+      return "maj9";
+    case "minor9":
+      return "m9";
+    case "halfDiminished":
+      return "m7b5";
     case "sus2":
       return "sus2";
     case "sus4":
@@ -107,6 +123,14 @@ export function chordPitchClasses(chord: ChordSymbol): PitchClass[] {
     dominant7: [0, 4, 7, 10],
     major7: [0, 4, 7, 11],
     minor7: [0, 3, 7, 10],
+    major6: [0, 4, 7, 9],
+    minor6: [0, 3, 7, 9],
+    add9: [0, 2, 4, 7],
+    minorAdd9: [0, 2, 3, 7],
+    dominant9: [0, 2, 4, 7, 10],
+    major9: [0, 2, 4, 7, 11],
+    minor9: [0, 2, 3, 7, 10],
+    halfDiminished: [0, 3, 6, 10],
     sus2: [0, 2, 7],
     sus4: [0, 5, 7],
     diminished: [0, 3, 6],
@@ -125,11 +149,16 @@ export function romanNumeral(chord: ChordSymbol, key?: TonalContext["primary"]):
   if (degree < 0) return "borrowed";
 
   let numeral = numerals[degree];
-  if (chord.quality === "minor" || chord.quality === "minor7" || chord.quality === "diminished") {
+  if (
+    ["minor", "minor7", "minor6", "minorAdd9", "minor9", "diminished", "halfDiminished"].includes(
+      chord.quality,
+    )
+  ) {
     numeral = numeral.toLowerCase();
   }
   if (chord.quality === "diminished") numeral += "°";
-  if (chord.quality.endsWith("7") || chord.quality === "dominant7") numeral += "7";
+  if (["dominant7", "major7", "minor7", "halfDiminished"].includes(chord.quality)) numeral += "7";
+  if (["dominant9", "major9", "minor9"].includes(chord.quality)) numeral += "9";
   return numeral;
 }
 
@@ -140,7 +169,11 @@ export function sameChord(a: ChordSymbol, b: ChordSymbol): boolean {
 export function guitarPlayability(chord: ChordSymbol): number {
   const easyRoots = new Set([0, 2, 4, 7, 9]);
   let score = easyRoots.has(chord.root) ? 0.9 : 0.68;
-  if (["major", "minor", "power", "sus2", "sus4"].includes(chord.quality)) {
+  if (
+    ["major", "minor", "power", "sus2", "sus4", "major6", "minor6", "add9", "minorAdd9"].includes(
+      chord.quality,
+    )
+  ) {
     score += 0.06;
   }
   if (["diminished", "augmented"].includes(chord.quality)) score -= 0.18;

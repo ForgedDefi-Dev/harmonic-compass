@@ -149,3 +149,33 @@ test("mobile keeps the live take and Build save action reachable", async ({ page
   await page.getByRole("button", { name: "Build", exact: true }).click();
   await expect(page.getByRole("button", { name: "Save version" })).toBeVisible();
 });
+
+test("voicing explorer and Shape Finder turn discovery into a playable choice", async ({
+  page,
+}) => {
+  await page.goto("/?showcase=1");
+  await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
+  await page.getByRole("button", { name: "Pause", exact: true }).click();
+  await page.getByRole("button", { name: "Manual", exact: true }).click();
+  await page
+    .locator(".manual-chord-picker")
+    .getByRole("button", { name: "C", exact: true })
+    .click();
+  await page.locator(".compass-node").filter({ hasText: "SURPRISE" }).first().click();
+
+  await expect(page.getByText(/playable shapes/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Use this shape" })).toBeVisible();
+  await page.getByRole("button", { name: "Save voicing to favorites" }).click();
+  await page.getByRole("button", { name: "Next voicing" }).click();
+  await expect(page.getByRole("button", { name: "Compare saved" })).toBeVisible();
+
+  await page.getByRole("button", { name: /Find a chord from frets/ }).click();
+  await expect(page.getByRole("heading", { name: "What chord is this shape?" })).toBeVisible();
+  await page.getByRole("button", { name: "E string muted" }).click();
+  await page.getByRole("button", { name: "A string fret 3" }).click();
+  await page.getByRole("button", { name: "D string fret 2" }).click();
+  await page.getByRole("button", { name: "G string open" }).click();
+  await page.getByRole("button", { name: "B string fret 1" }).click();
+  await page.getByRole("button", { name: "e string open" }).click();
+  await expect(page.locator(".shape-match").first()).toContainText("C");
+});

@@ -43,10 +43,17 @@ import {
   type ListeningState,
 } from "@/audio";
 import {
+  analyzeFretShape,
+  createGuitarVoicing,
   formatChord,
+  getChordColorVariants,
   getGuitarVoicing,
+  getGuitarVoicings,
   getSuggestions,
+  GUITAR_TUNINGS,
   guitarDiagramWindow,
+  type GuitarVoicing,
+  type GuitarTuningId,
   SHOWCASE_PROGRESSION,
 } from "@/music";
 import {
@@ -68,6 +75,9 @@ interface ProgressionChord {
   numeral: string;
   beats: number;
   color?: "borrowed";
+  voicing?: GuitarVoicing;
+  tuning?: GuitarTuningId;
+  capo?: number;
 }
 
 interface Suggestion {
@@ -373,27 +383,44 @@ function parseChordName(name: string): ChordSymbol {
   const [symbol, bassName] = name.replaceAll("♭", "b").replaceAll("♯", "#").split("/");
   const match = /^([A-G](?:#|b)?)(.*)$/.exec(symbol ?? "C");
   const rootName = match?.[1] ?? "C";
-  const suffix = match?.[2] ?? "";
-  const quality = suffix.includes("dim")
-    ? "diminished"
-    : suffix.includes("maj7")
-      ? "major7"
-      : suffix.includes("m7")
-        ? "minor7"
-        : suffix === "m"
-          ? "minor"
-          : suffix.includes("7")
-            ? "dominant7"
-            : suffix.includes("sus2")
-              ? "sus2"
-              : suffix.includes("sus4")
-                ? "sus4"
-                : "major";
+  const suffix = (match?.[2] ?? "").replaceAll("(", "").replaceAll(")", "");
+  const quality: ChordSymbol["quality"] = suffix.includes("m7b5")
+    ? "halfDiminished"
+    : suffix.includes("maj9")
+      ? "major9"
+      : suffix.includes("m9")
+        ? "minor9"
+        : suffix.includes("9")
+          ? "dominant9"
+          : suffix.includes("maj7")
+            ? "major7"
+            : suffix.includes("m7")
+              ? "minor7"
+              : suffix.includes("add9")
+                ? suffix.startsWith("m")
+                  ? "minorAdd9"
+                  : "add9"
+                : suffix.includes("m6")
+                  ? "minor6"
+                  : suffix === "6"
+                    ? "major6"
+                    : suffix.includes("dim")
+                      ? "diminished"
+                      : suffix.includes("aug") || suffix === "+"
+                        ? "augmented"
+                        : suffix === "5"
+                          ? "power"
+                          : suffix.includes("sus2")
+                            ? "sus2"
+                            : suffix.includes("sus4") || suffix === "sus"
+                              ? "sus4"
+                              : suffix === "m" || suffix.startsWith("m")
+                                ? "minor"
+                                : "major";
   const root = pitchClassByName[rootName] ?? 0;
   const bass = bassName ? pitchClassByName[bassName] : undefined;
   return bass === undefined ? { root, quality } : { root, quality, bass };
 }
-
 function cloneProgression(progression: ProgressionChord[]): ProgressionChord[] {
   return progression.map((chord) => ({ ...chord }));
 }
@@ -672,15 +699,27 @@ function WorkspaceHeader({
   );
 }
 
-function ChordDiagram({ chord }: { chord: string }) {
-  const voicing = getGuitarVoicing(chord);
-  const { firstFret, fretCount } = guitarDiagramWindow(chord);
+function ChordDiagram({
+  chord,
+  voicing,
+  tuningId = "standard",
+  capo = 0,
+  compact = false,
+}: {
+  chord: string;
+  voicing?: GuitarVoicing;
+  tuningId?: GuitarTuningId;
+  capo?: number;
+  compact?: boolean;
+}) {
+  const resolved = voicing ?? getGuitarVoicing(chord, { tuning: tuningId, capo });
+  const { firstFret, fretCount } = guitarDiagramWindow(resolved);
   const stringXs = [12, 26, 40, 54, 68, 82];
   const fretHeight = 16;
   const top = 22;
   const barreGroups = new Map<string, number[]>();
-  voicing.frets.forEach((fret, stringIndex) => {
-    const finger = voicing.fingers[stringIndex];
+  resolved.frets.forEach((fret, stringIndex) => {
+    const finger = resolved.fingers[stringIndex];
     if (fret <= 0 || finger <= 0) return;
     const key = `${fret}-${finger}`;
     barreGroups.set(key, [...(barreGroups.get(key) ?? []), stringIndex]);
@@ -688,9 +727,12 @@ function ChordDiagram({ chord }: { chord: string }) {
   const barres = [...barreGroups.entries()].filter(([, strings]) => strings.length >= 2);
 
   return (
-    <div className="chord-diagram" aria-label={`${chord} guitar chord diagram, ${voicing.name}`}>
+    <div
+      className={`chord-diagram ${compact ? "chord-diagram--compact" : ""}`}
+      aria-label={`${chord} guitar chord diagram, ${resolved.name}`}
+    >
       <svg viewBox="0 0 94 110" aria-hidden="true">
-        {voicing.frets.map((fret, stringIndex) => (
+        {resolved.frets.map((fret, stringIndex) => (
           <text key={`status-${stringIndex}`} x={stringXs[stringIndex]} y="10" textAnchor="middle">
             {fret < 0 ? "×" : fret === 0 ? "○" : ""}
           </text>
@@ -723,7 +765,7 @@ function ChordDiagram({ chord }: { chord: string }) {
             />
           );
         })}
-        {voicing.frets.map((fret, stringIndex) => {
+        {resolved.frets.map((fret, stringIndex) => {
           if (fret <= 0) return null;
           const relativeFret = fret - firstFret;
           const y = top + (relativeFret + 0.5) * fretHeight;
@@ -736,15 +778,127 @@ function ChordDiagram({ chord }: { chord: string }) {
                 y={y + 2.2}
                 textAnchor="middle"
               >
-                {voicing.fingers[stringIndex]}
+                {resolved.fingers[stringIndex]}
               </text>
             </g>
           );
         })}
       </svg>
       {firstFret > 1 && <span className="chord-diagram__position">{firstFret}fr</span>}
-      <small>{voicing.name}</small>
+      <small>{resolved.name}</small>
+      {!compact && (
+        <span className="chord-diagram__stats">
+          {resolved.openStrings} open · {resolved.difficulty}/5 difficulty
+        </span>
+      )}
+      {capo > 0 && <span className="chord-diagram__capo">Capo {capo}</span>}
     </div>
+  );
+}
+function ShapeFinder({
+  tuningId,
+  capo,
+  setTuningId,
+  setCapo,
+  onUseChord,
+  onClose,
+}: {
+  tuningId: GuitarTuningId;
+  capo: number;
+  setTuningId: (tuning: GuitarTuningId) => void;
+  setCapo: (capo: number) => void;
+  onUseChord: (chord: string, frets: readonly number[]) => void;
+  onClose: () => void;
+}) {
+  const [frets, setFrets] = useState<number[]>([-1, -1, -1, -1, -1, -1]);
+  const matches = analyzeFretShape(frets, tuningId, capo);
+  const strings = ["E", "A", "D", "G", "B", "e"];
+  const choices = [-1, 0, 1, 2, 3, 4, 5];
+
+  return (
+    <section className="shape-finder" aria-labelledby="shape-finder-title">
+      <header className="shape-finder__header">
+        <div>
+          <span className="section-kicker">SHAPE FINDER</span>
+          <h2 id="shape-finder-title">What chord is this shape?</h2>
+          <p>Tap one fret on each string. We’ll show the most likely names and bass note.</p>
+        </div>
+        <button className="icon-button" aria-label="Close shape finder" onClick={onClose}>
+          <X size={16} />
+        </button>
+      </header>
+      <div className="shape-finder__setup">
+        <label>
+          <span>Tuning</span>
+          <select
+            value={tuningId}
+            onChange={(event) => setTuningId(event.target.value as GuitarTuningId)}
+          >
+            {GUITAR_TUNINGS.map((tuning) => (
+              <option key={tuning.id} value={tuning.id}>
+                {tuning.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Capo</span>
+          <input
+            type="number"
+            min={0}
+            max={12}
+            value={capo}
+            onChange={(event) =>
+              setCapo(Math.max(0, Math.min(12, Number(event.target.value) || 0)))
+            }
+          />
+        </label>
+        <button className="text-button" onClick={() => setFrets([-1, -1, -1, -1, -1, -1])}>
+          Clear
+        </button>
+      </div>
+      <div className="shape-finder__grid" role="group" aria-label="Guitar fret selector">
+        {strings.map((stringName, stringIndex) => (
+          <div className="shape-finder__row" key={stringName}>
+            <span>{stringName}</span>
+            {choices.map((fret) => (
+              <button
+                key={fret}
+                className={frets[stringIndex] === fret ? "is-active" : ""}
+                aria-pressed={frets[stringIndex] === fret}
+                aria-label={`${stringName} string ${fret < 0 ? "muted" : fret === 0 ? "open" : `fret ${fret}`}`}
+                onClick={() =>
+                  setFrets((current) =>
+                    current.map((value, index) => (index === stringIndex ? fret : value)),
+                  )
+                }
+              >
+                {fret < 0 ? "×" : fret === 0 ? "○" : fret}
+              </button>
+            ))}
+          </div>
+        ))}
+      </div>
+      <div className="shape-finder__matches" aria-live="polite">
+        {matches.length === 0 ? (
+          <p className="shape-finder__empty">Choose at least two notes to reveal a chord.</p>
+        ) : (
+          matches.map((match) => (
+            <button
+              key={match.chord}
+              className="shape-match"
+              onClick={() => onUseChord(match.chord, frets)}
+            >
+              <span>
+                <strong>{match.chord}</strong>
+                <small>{match.detail}</small>
+              </span>
+              <em>{Math.round(match.confidence * 100)}%</em>
+            </button>
+          ))
+        )}
+      </div>
+    </section>
   );
 }
 function CompassNode({
@@ -785,6 +939,10 @@ function HarmonicCompass({
   selectedSuggestion,
   setSelectedSuggestion,
   assistance,
+  tuningId,
+  capo,
+  previousVoicing,
+  onUseVoicing,
 }: {
   currentChord: ProgressionChord | null;
   inputMode: InputMode;
@@ -792,24 +950,80 @@ function HarmonicCompass({
   selectedSuggestion: number | null;
   setSelectedSuggestion: (index: number | null) => void;
   assistance: AssistanceLevel;
+  tuningId: GuitarTuningId;
+  capo: number;
+  previousVoicing?: GuitarVoicing;
+  onUseVoicing: (chord: string, voicing: GuitarVoicing) => void;
 }) {
   const activeSuggestion = selectedSuggestion === null ? null : suggestions[selectedSuggestion];
   const previewRef = useRef<ChordPreviewPlayer | null>(null);
   const [previewPattern, setPreviewPattern] = useState<ChordPreviewPattern>("strum");
   const [isPreviewing, setIsPreviewing] = useState(false);
+  const [voicingIndex, setVoicingIndex] = useState(0);
+  const [exploredChord, setExploredChord] = useState<string | null>(null);
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [favorites, setFavorites] = useState<GuitarVoicing[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const stored = window.localStorage.getItem("harmonic-compass-voicing-favorites");
+      return stored ? (JSON.parse(stored) as GuitarVoicing[]) : [];
+    } catch {
+      return [];
+    }
+  });
+  const activeChord = exploredChord ?? activeSuggestion?.chord ?? null;
+  const voicings = activeChord
+    ? getGuitarVoicings(activeChord, {
+        tuning: tuningId,
+        capo,
+        previous: previousVoicing,
+        limit: 6,
+      })
+    : [];
+  const activeVoicing = voicings[voicingIndex] ?? voicings[0];
+  const displayVoicingIndex = activeVoicing
+    ? Math.max(
+        0,
+        voicings.findIndex((voicing) => voicing.id === activeVoicing.id),
+      )
+    : 0;
+  const savedForChord = activeChord
+    ? favorites.filter((voicing) => voicing.chord === activeChord)
+    : [];
+  const comparisonVoicing = savedForChord.find((voicing) => voicing.id !== activeVoicing?.id);
+  const variants = activeChord ? getChordColorVariants(activeChord) : [];
+
+  useEffect(() => {
+    window.localStorage.setItem("harmonic-compass-voicing-favorites", JSON.stringify(favorites));
+  }, [favorites]);
+
   useEffect(
     () => () => {
       void previewRef.current?.stop();
     },
     [],
   );
+
   const previewChord = async () => {
-    if (!activeSuggestion) return;
+    if (!activeChord || !activeVoicing) return;
     previewRef.current ??= createPreviewPlayer(setIsPreviewing);
-    await previewRef.current.previewGuitarChord(activeSuggestion.chord, {
+    await previewRef.current.previewGuitarChord(activeChord, {
       pattern: previewPattern,
+      voicing: activeVoicing,
+      tuning: tuningId,
+      capo,
     });
   };
+
+  const toggleFavorite = () => {
+    if (!activeVoicing) return;
+    setFavorites((current) =>
+      current.some((voicing) => voicing.id === activeVoicing.id)
+        ? current.filter((voicing) => voicing.id !== activeVoicing.id)
+        : [activeVoicing, ...current].slice(0, 24),
+    );
+  };
+
   return (
     <div className="compass-stage">
       <div className="compass-stage__axis" aria-hidden="true">
@@ -835,7 +1049,12 @@ function HarmonicCompass({
           suggestion={suggestion}
           index={index}
           selected={selectedSuggestion === index}
-          onSelect={() => setSelectedSuggestion(selectedSuggestion === index ? null : index)}
+          onSelect={() => {
+            setVoicingIndex(0);
+            setExploredChord(null);
+            setCompareOpen(false);
+            setSelectedSuggestion(selectedSuggestion === index ? null : index);
+          }}
           assistance={assistance}
         />
       ))}
@@ -868,17 +1087,110 @@ function HarmonicCompass({
           </>
         )}
       </div>
-      {activeSuggestion && (
+      {activeSuggestion && activeChord && activeVoicing && (
         <div className="suggestion-inspector" role="status">
           <div className="suggestion-inspector__diagram">
-            <ChordDiagram chord={activeSuggestion.chord} />
+            <ChordDiagram
+              chord={activeChord}
+              voicing={activeVoicing}
+              tuningId={tuningId}
+              capo={capo}
+            />
           </div>
-          <div>
+          <div className="suggestion-inspector__copy">
             <span>{activeSuggestion.bearing}</span>
             <strong>
-              {activeSuggestion.chord} <small>{activeSuggestion.numeral}</small>
+              {activeChord} <small>{activeSuggestion.numeral}</small>
             </strong>
             <p>{activeSuggestion.detail}</p>
+          </div>
+          <div className="voicing-explorer" aria-label="Voicing explorer">
+            <header>
+              <span className="section-kicker">VOICING EXPLORER</span>
+              <strong>{voicings.length} playable shapes</strong>
+            </header>
+            <div className="voicing-explorer__pager">
+              <button
+                className="icon-button"
+                aria-label="Previous voicing"
+                disabled={displayVoicingIndex === 0}
+                onClick={() => setVoicingIndex(Math.max(0, displayVoicingIndex - 1))}
+              >
+                <ArrowLeft size={14} />
+              </button>
+              <span>
+                {displayVoicingIndex + 1} / {voicings.length} · {activeVoicing.name}
+              </span>
+              <button
+                className="icon-button"
+                aria-label="Next voicing"
+                disabled={displayVoicingIndex >= voicings.length - 1}
+                onClick={() =>
+                  setVoicingIndex(Math.min(voicings.length - 1, displayVoicingIndex + 1))
+                }
+              >
+                <ArrowRight size={14} />
+              </button>
+            </div>
+            <div className="voicing-explorer__meta">
+              <span>{activeVoicing.style}</span>
+              <span>{activeVoicing.difficulty}/5 difficulty</span>
+              <span>{activeVoicing.openStrings} open</span>
+              {activeVoicing.sharedStrings ? (
+                <span>{activeVoicing.sharedStrings} shared</span>
+              ) : null}
+            </div>
+            <div className="voicing-explorer__actions">
+              <button
+                className="secondary-button"
+                onClick={() => onUseVoicing(activeChord, activeVoicing)}
+              >
+                <Guitar size={14} /> Use this shape
+              </button>
+              <button
+                className={`icon-button ${favorites.some((voicing) => voicing.id === activeVoicing.id) ? "is-active" : ""}`}
+                aria-label="Save voicing to favorites"
+                aria-pressed={favorites.some((voicing) => voicing.id === activeVoicing.id)}
+                onClick={toggleFavorite}
+              >
+                <Star size={15} fill="currentColor" />
+              </button>
+              {comparisonVoicing && (
+                <button className="text-button" onClick={() => setCompareOpen((open) => !open)}>
+                  {compareOpen ? "Hide compare" : "Compare saved"}
+                </button>
+              )}
+            </div>
+            {compareOpen && comparisonVoicing && (
+              <div className="voicing-compare">
+                <div>
+                  <small>Current</small>
+                  <ChordDiagram chord={activeChord} voicing={activeVoicing} compact />
+                </div>
+                <div>
+                  <small>Saved</small>
+                  <ChordDiagram chord={activeChord} voicing={comparisonVoicing} compact />
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="chord-variants">
+            <span className="section-kicker">CHANGE THE COLOR</span>
+            <div>
+              {variants.map((variant) => (
+                <button
+                  key={variant.chord}
+                  onClick={() => {
+                    setExploredChord(variant.chord);
+                    setVoicingIndex(0);
+                    setCompareOpen(false);
+                  }}
+                >
+                  <strong>{variant.chord}</strong>
+                  <small>{variant.label}</small>
+                </button>
+              ))}
+            </div>
           </div>
           <div className="suggestion-inspector__playback">
             <div className="preview-pattern" role="group" aria-label="Chord preview pattern">
@@ -896,7 +1208,7 @@ function HarmonicCompass({
             <button
               className={`preview-button ${isPreviewing ? "is-active" : ""}`}
               onClick={() => void previewChord()}
-              aria-label={`Preview ${activeSuggestion.chord} as ${previewPattern}`}
+              aria-label={`Preview ${activeChord} as ${previewPattern}`}
             >
               <Volume2 size={16} /> {isPreviewing ? "Playing…" : "Hear guitar"}
             </button>
@@ -913,7 +1225,6 @@ function HarmonicCompass({
     </div>
   );
 }
-
 function SessionControls({
   inputMode,
   setInputMode,
@@ -1316,6 +1627,9 @@ function PlaySpace({
   const [manualChord, setManualChord] = useState<string | null>(null);
   const [selectedSuggestion, setSelectedSuggestion] = useState<number | null>(null);
   const [selectedIntent, setSelectedIntent] = useState<EmotionalIntent | null>(null);
+  const [tuningId, setTuningId] = useState<GuitarTuningId>("standard");
+  const [capo, setCapo] = useState(0);
+  const [shapeFinderOpen, setShapeFinderOpen] = useState(false);
   const [isPlaying, setIsPlaying] = useState(inputMode === "demo");
 
   const takePreviewRef = useRef<ChordPreviewPlayer | null>(null);
@@ -1455,6 +1769,64 @@ function PlaySpace({
           );
         }}
       />
+      <div className="guitar-setup-bar" aria-label="Guitar setup">
+        <label>
+          <Guitar size={15} />
+          <span>TUNING</span>
+          <select
+            value={tuningId}
+            onChange={(event) => setTuningId(event.target.value as GuitarTuningId)}
+          >
+            {GUITAR_TUNINGS.map((tuning) => (
+              <option key={tuning.id} value={tuning.id}>
+                {tuning.shortLabel}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>CAPO</span>
+          <input
+            type="number"
+            min={0}
+            max={12}
+            value={capo}
+            onChange={(event) =>
+              setCapo(Math.max(0, Math.min(12, Number(event.target.value) || 0)))
+            }
+          />
+        </label>
+        <button className="secondary-button" onClick={() => setShapeFinderOpen((open) => !open)}>
+          <Search size={15} /> {shapeFinderOpen ? "Hide shape finder" : "Find a chord from frets"}
+        </button>
+      </div>
+      {shapeFinderOpen && (
+        <ShapeFinder
+          tuningId={tuningId}
+          capo={capo}
+          setTuningId={setTuningId}
+          setCapo={setCapo}
+          onClose={() => setShapeFinderOpen(false)}
+          onUseChord={(name, frets) => {
+            const voicing = createGuitarVoicing(name, frets, tuningId, capo, "Shape Finder shape");
+            setManualChord(name);
+            setInputMode("manual");
+            setCapturedProgression((current) => [
+              ...current,
+              {
+                id: crypto.randomUUID(),
+                name,
+                numeral: name.includes("m") ? "vi" : "I",
+                beats: 4,
+                voicing,
+                tuning: tuningId,
+                capo,
+              },
+            ]);
+            setShapeFinderOpen(false);
+          }}
+        />
+      )}
       <main className="play-workspace">
         <section className="compass-panel" aria-label="Harmonic Compass">
           <div className="compass-panel__intro">
@@ -1468,6 +1840,25 @@ function PlaySpace({
             selectedSuggestion={selectedSuggestion}
             setSelectedSuggestion={setSelectedSuggestion}
             assistance={assistance}
+            tuningId={tuningId}
+            capo={capo}
+            previousVoicing={capturedProgression.at(-1)?.voicing}
+            onUseVoicing={(name, voicing) => {
+              setManualChord(name);
+              setInputMode("manual");
+              setCapturedProgression((current) => [
+                ...current,
+                {
+                  id: crypto.randomUUID(),
+                  name,
+                  numeral: name.includes("m") ? "vi" : "I",
+                  beats: 4,
+                  voicing,
+                  tuning: tuningId,
+                  capo,
+                },
+              ]);
+            }}
           />
           <div className="compass-legend">
             <span>
@@ -1525,6 +1916,9 @@ function PlaySpace({
             capturedProgression.map((chord) => chord.name),
             96,
             "strum",
+            capturedProgression.map((chord) => chord.voicing),
+            capturedProgression.at(-1)?.tuning,
+            capturedProgression.at(-1)?.capo ?? 0,
           );
         }}
         setActiveIndex={(index) => {
@@ -1822,7 +2216,16 @@ function BuildSpace({
     const playOnce = async () => {
       if (cancelled) return;
       previewRef.current ??= createPreviewPlayer();
-      await previewRef.current.previewGuitarRoute(chordNames, 96, "strum");
+      await previewRef.current.previewGuitarRoute(
+        chordNames,
+        96,
+        "strum",
+        playbackScope === "song"
+          ? sections.flatMap((item) => item.chords.map((chord) => chord.voicing))
+          : section.chords.map((chord) => chord.voicing),
+        section.chords.find((chord) => chord.tuning)?.tuning,
+        section.chords.find((chord) => chord.capo !== undefined)?.capo ?? 0,
+      );
       loopTimerRef.current = window.setTimeout(() => {
         if (cancelled) return;
         if (looping) void playOnce();
@@ -2030,6 +2433,9 @@ function BuildSpace({
                 <span className="chord-block__count">{String(index + 1).padStart(2, "0")}</span>
                 <strong>{chordNameForVariation(chord, index)}</strong>
                 <em>{numeralForVariation(chord, index)}</em>
+                {chord.voicing && (
+                  <small className="chord-block__voicing">{chord.voicing.name}</small>
+                )}
                 <div className="chord-block__beats">
                   {Array.from({ length: chord.beats }).map((_, beat) => (
                     <i key={beat} className={beat === 0 ? "is-strong" : ""} />

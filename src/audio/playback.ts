@@ -1,5 +1,10 @@
 import type { ChordSymbol } from "@/types/music";
-import { guitarVoicingNotes } from "@/music/guitar";
+import {
+  guitarNotesForVoicing,
+  guitarVoicingNotes,
+  type GuitarTuningId,
+  type GuitarVoicing,
+} from "@/music/guitar";
 import { chordPitchClasses, formatChord } from "@/music/theory";
 
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
@@ -27,6 +32,9 @@ export type ChordPreviewPattern = "strum" | "arpeggio";
 export interface ChordPreviewOptions {
   pattern?: ChordPreviewPattern;
   durationSeconds?: number;
+  voicing?: GuitarVoicing;
+  tuning?: GuitarTuningId;
+  capo?: number;
 }
 
 function noteFrequency(note: string): number {
@@ -182,7 +190,9 @@ export class ChordPreviewPlayer {
     }
     const pattern = options.pattern ?? "strum";
     const durationSeconds = options.durationSeconds ?? (pattern === "arpeggio" ? 2.4 : 1.8);
-    const notes = guitarVoicingNotes(chord);
+    const notes = options.voicing
+      ? guitarNotesForVoicing(options.voicing, options.tuning, options.capo)
+      : guitarVoicingNotes(chord, { tuning: options.tuning, capo: options.capo });
     this.scheduleGuitarChord(notes, context.currentTime + 0.035, pattern, durationSeconds);
     const spacing = pattern === "arpeggio" ? 0.18 : 0.032;
     const previewDurationMs = (durationSeconds + notes.length * spacing + 0.8) * 1000;
@@ -205,6 +215,9 @@ export class ChordPreviewPlayer {
     chords: string[],
     bpm = 96,
     pattern: ChordPreviewPattern = "strum",
+    voicings?: (GuitarVoicing | undefined)[],
+    tuning?: GuitarTuningId,
+    capo = 0,
   ): Promise<void> {
     await this.stop();
     this.onPreviewState?.(true);
@@ -218,8 +231,11 @@ export class ChordPreviewPlayer {
     const secondsPerChord = (60 / bpm) * 2;
     const now = context.currentTime + 0.04;
     chords.forEach((chord, index) => {
+      const voicing = voicings?.[index];
       this.scheduleGuitarChord(
-        guitarVoicingNotes(chord),
+        voicing
+          ? guitarNotesForVoicing(voicing, tuning, capo)
+          : guitarVoicingNotes(chord, { tuning, capo }),
         now + index * secondsPerChord,
         pattern,
         secondsPerChord * 0.78,
