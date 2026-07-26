@@ -138,3 +138,14 @@ test("cold start turns one manual chord into a Build idea", async ({ page }) => 
   await expect(page.getByRole("region", { name: "Song map" })).toContainText("Your idea");
   await expect(page.locator(".chord-block").first()).toContainText("C");
 });
+
+test("mobile keeps the live take and Build save action reachable", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?showcase=1");
+  await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
+
+  await expect(page.locator(".session-controls")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open in Build" })).toBeVisible();
+  await page.getByRole("button", { name: "Build", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Save version" })).toBeVisible();
+});
