@@ -8,7 +8,7 @@ test("complete showcase journey stays musical and human-led", async ({ page }, t
   await expect(page.getByRole("region", { name: "Harmonic Compass" })).toBeVisible();
   await expect(page.getByText("Guided showcase")).toBeVisible();
 
-  await page.getByRole("button", { name: "Pause", exact: true }).click();
+  await page.getByRole("button", { name: "Pause demo", exact: true }).click();
   await page.locator(".compass-node").filter({ hasText: "SURPRISE" }).first().click();
   await expect(page.getByRole("status").filter({ hasText: "SURPRISE" })).toBeVisible();
 
@@ -49,7 +49,7 @@ test("phone layout keeps the Compass and navigation usable", async ({ page }, te
   await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
   await expect(page.getByRole("navigation", { name: "Primary navigation" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Harmonic Compass" })).toBeVisible();
-  await page.getByRole("button", { name: "Pause", exact: true }).click();
+  await page.getByRole("button", { name: "Pause demo", exact: true }).click();
   await page.getByRole("button", { name: "Grow", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Find home without the map." })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("phone-grow.png"), fullPage: true });
@@ -60,7 +60,7 @@ test("guitar previews and workspace controls produce visible state changes", asy
 }, testInfo) => {
   await page.goto("/?showcase=1");
   await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
-  await page.getByRole("button", { name: "Pause", exact: true }).click();
+  await page.getByRole("button", { name: "Pause demo", exact: true }).click();
   await page.getByRole("button", { name: "Manual", exact: true }).click();
   await page
     .locator(".manual-chord-picker")
@@ -107,8 +107,8 @@ test("guitar previews and workspace controls produce visible state changes", asy
   );
 
   await page.getByRole("button", { name: "Library", exact: true }).click();
-  await page.getByRole("button", { name: "Sort by name" }).click();
-  await expect(page.getByRole("button", { name: "Sort by last updated" })).toBeVisible();
+  await page.getByRole("button", { name: "Sort by last updated" }).click();
+  await expect(page.getByRole("button", { name: "Sort by name" })).toBeVisible();
   await page.getByRole("button", { name: "More options for Borrowed Light" }).click();
   await expect(page.getByRole("button", { name: "Preview guitar" })).toBeVisible();
 });
@@ -125,7 +125,6 @@ test("cold start turns one manual chord into a Build idea", async ({ page }) => 
   );
   await expect(page.locator(".session-status")).toContainText("Choose your first chord");
 
-  await page.getByRole("button", { name: "Manual", exact: true }).click();
   await page
     .locator(".manual-chord-picker")
     .getByRole("button", { name: "C", exact: true })
@@ -134,8 +133,8 @@ test("cold start turns one manual chord into a Build idea", async ({ page }) => 
   await expect(page.getByText("Chord selected")).toBeVisible();
 
   await page.getByRole("button", { name: "Open in Build" }).click();
-  await expect(page.getByRole("heading", { name: "Your first idea" })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Song map" })).toContainText("Your idea");
+  await expect(page.getByRole("heading", { name: "Untitled idea" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Song map" })).toContainText("Song map");
   await expect(page.locator(".chord-block").first()).toContainText("C");
 });
 
@@ -155,7 +154,7 @@ test("voicing explorer and Shape Finder turn discovery into a playable choice", 
 }) => {
   await page.goto("/?showcase=1");
   await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
-  await page.getByRole("button", { name: "Pause", exact: true }).click();
+  await page.getByRole("button", { name: "Pause demo", exact: true }).click();
   await page.getByRole("button", { name: "Manual", exact: true }).click();
   await page
     .locator(".manual-chord-picker")

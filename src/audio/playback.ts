@@ -6,6 +6,7 @@ import {
   type GuitarVoicing,
 } from "@/music/guitar";
 import { chordPitchClasses, formatChord } from "@/music/theory";
+import { SteelStringSampleBank, noteToMidi } from "./steel-string-sampler";
 
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
@@ -171,6 +172,8 @@ export class ChordPreviewPlayer {
   private master?: GainNode;
   private outputNodes: AudioNode[] = [];
   private activeUntil?: ReturnType<typeof setTimeout>;
+  private sampleBank?: SteelStringSampleBank;
+  private sampleBankLoadFailed = false;
 
   constructor(private readonly onPreviewState?: (active: boolean) => void) {}
 
@@ -193,7 +196,14 @@ export class ChordPreviewPlayer {
     const notes = options.voicing
       ? guitarNotesForVoicing(options.voicing, options.tuning, options.capo)
       : guitarVoicingNotes(chord, { tuning: options.tuning, capo: options.capo });
-    this.scheduleGuitarChord(notes, context.currentTime + 0.035, pattern, durationSeconds);
+    const sampleBank = await this.getSampleBank(context);
+    this.scheduleGuitarChord(
+      notes,
+      context.currentTime + 0.035,
+      pattern,
+      durationSeconds,
+      sampleBank,
+    );
     const spacing = pattern === "arpeggio" ? 0.18 : 0.032;
     const previewDurationMs = (durationSeconds + notes.length * spacing + 0.8) * 1000;
     this.activeUntil = setTimeout(() => this.finishPreview(), previewDurationMs);
@@ -230,6 +240,7 @@ export class ChordPreviewPlayer {
     }
     const secondsPerChord = (60 / bpm) * 2;
     const now = context.currentTime + 0.04;
+    const sampleBank = await this.getSampleBank(context);
     chords.forEach((chord, index) => {
       const voicing = voicings?.[index];
       this.scheduleGuitarChord(
@@ -239,6 +250,7 @@ export class ChordPreviewPlayer {
         now + index * secondsPerChord,
         pattern,
         secondsPerChord * 0.78,
+        sampleBank,
       );
     });
     const previewDurationMs = (chords.length * secondsPerChord + 0.7) * 1000;
@@ -280,11 +292,22 @@ export class ChordPreviewPlayer {
     return this.context;
   }
 
+  private async getSampleBank(context: AudioContext): Promise<SteelStringSampleBank | undefined> {
+    if (this.sampleBankLoadFailed) return undefined;
+    this.sampleBank ??= new SteelStringSampleBank(context);
+    if (!(await this.sampleBank.load())) {
+      this.sampleBankLoadFailed = true;
+      return undefined;
+    }
+    return this.sampleBank;
+  }
+
   private scheduleGuitarChord(
     notes: string[],
     startAt: number,
     pattern: ChordPreviewPattern,
     durationSeconds: number,
+    sampleBank?: SteelStringSampleBank,
   ): void {
     const context = this.context;
     const master = this.master;
@@ -301,7 +324,19 @@ export class ChordPreviewPlayer {
       const noteStart = startAt + index * spacing;
       const velocity = Math.max(0.38, 0.72 - index * 0.035);
 
-      source.buffer = createPluckedStringBuffer(context, frequency, noteDuration + 0.35, index);
+      const sampled = sampleBank?.getBuffer(note);
+      if (sampled) {
+        source.buffer = sampled.buffer;
+        const targetMidi = noteToMidi(note);
+        if (targetMidi !== undefined) {
+          source.playbackRate.setValueAtTime(
+            2 ** ((targetMidi - sampled.sampleMidi) / 12),
+            noteStart,
+          );
+        }
+      } else {
+        source.buffer = createPluckedStringBuffer(context, frequency, noteDuration + 0.35, index);
+      }
       warmth.type = "lowpass";
       warmth.frequency.value = Math.min(5_800, 3_600 + frequency * 2.15);
       warmth.Q.value = 0.56;

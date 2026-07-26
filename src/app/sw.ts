@@ -3,7 +3,7 @@
 
 import { defaultCache } from "@serwist/turbopack/worker";
 import type { PrecacheEntry, SerwistGlobalConfig } from "serwist";
-import { NetworkOnly, Serwist } from "serwist";
+import { CacheFirst, NetworkOnly, Serwist } from "serwist";
 
 declare global {
   interface WorkerGlobalScope extends SerwistGlobalConfig {
@@ -19,6 +19,12 @@ const serwist = new Serwist({
   clientsClaim: true,
   navigationPreload: true,
   runtimeCaching: [
+    {
+      matcher({ url, sameOrigin }) {
+        return sameOrigin && url.pathname.startsWith("/audio/steel-string/");
+      },
+      handler: new CacheFirst({ cacheName: "harmonic-compass-steel-string" }),
+    },
     {
       matcher({ url, sameOrigin }) {
         return sameOrigin && url.pathname === "/api/mentor";

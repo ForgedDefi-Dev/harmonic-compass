@@ -68,6 +68,25 @@ export async function ensureSeeded(target = getDatabase()): Promise<{ seeded: bo
   });
 }
 
+/**
+ * Initialize a real user database without inserting showcase/example content.
+ * The showcase seed path remains available for deterministic demo tooling,
+ * while a cold user starts with an empty personal library.
+ */
+export async function ensureInitialized(
+  target = getDatabase(),
+): Promise<{ initialized: boolean }> {
+  return target.transaction("rw", target.settings, async () => {
+    const hasSettings = await target.settings.get("primary");
+    if (hasSettings) return { initialized: false };
+
+    const now = new Date().toISOString();
+    const seeds = createSeedData(now);
+    await target.settings.put(seeds.settings);
+    return { initialized: true };
+  });
+}
+
 export async function saveSong(song: SongDocument, target = getDatabase()): Promise<SongDocument> {
   const parsed = songDocumentSchema.parse({
     ...song,
@@ -79,7 +98,7 @@ export async function saveSong(song: SongDocument, target = getDatabase()): Prom
 }
 
 export async function getSettings(target = getDatabase()): Promise<AppSettings> {
-  await ensureSeeded(target);
+  await ensureInitialized(target);
   const settings = await target.settings.get("primary");
   return appSettingsSchema.parse(settings);
 }

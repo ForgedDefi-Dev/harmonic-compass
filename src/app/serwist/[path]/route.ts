@@ -6,6 +6,8 @@ const revision =
 export const { dynamic, dynamicParams, revalidate, generateStaticParams, GET } = createSerwistRoute(
   {
     additionalPrecacheEntries: [{ url: "/~offline", revision }],
+    // The sample bank is cached on first use, not during PWA install.
+    globIgnores: ["public/audio/**"],
     swSrc: "src/app/sw.ts",
     useNativeEsbuild: true,
   },

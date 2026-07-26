@@ -10,6 +10,7 @@ lockfile is the source of truth for exact versions and transitive packages.
 - XState — MIT
 - Serwist — MIT
 - Lucide — ISC
+- FSS Steel-String Acoustic Guitar (FreePats) — GPLv3 with the FreePats sound-sample exception; source samples by FlameStudios. The full notice is included in `public/audio/steel-string/`.
 
-The Showcase Mode audio is generated procedurally by this project and does not
-contain third-party recordings or copyrighted songs.
+The fallback and Showcase Mode audio remain procedural. Chord and arpeggio previews use the
+optional locally hosted FSS steel-string bank when it has loaded successfully.

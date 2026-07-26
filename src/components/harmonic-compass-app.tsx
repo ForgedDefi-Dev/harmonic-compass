@@ -58,6 +58,7 @@ import {
 } from "@/music";
 import {
   addVersion,
+  ensureInitialized,
   ensureSeeded,
   getDatabase,
   importLibrary,
@@ -943,6 +944,8 @@ function HarmonicCompass({
   capo,
   previousVoicing,
   onUseVoicing,
+  onAddSuggestion,
+  confidence,
 }: {
   currentChord: ProgressionChord | null;
   inputMode: InputMode;
@@ -954,6 +957,8 @@ function HarmonicCompass({
   capo: number;
   previousVoicing?: GuitarVoicing;
   onUseVoicing: (chord: string, voicing: GuitarVoicing) => void;
+  onAddSuggestion: (suggestion: Suggestion) => void;
+  confidence?: number;
 }) {
   const activeSuggestion = selectedSuggestion === null ? null : suggestions[selectedSuggestion];
   const previewRef = useRef<ChordPreviewPlayer | null>(null);
@@ -1075,15 +1080,19 @@ function HarmonicCompass({
           <>
             <strong>{currentChord.name}</strong>
             {assistance !== "beginner" && <em>{currentChord.numeral} · HARMONIC CENTER</em>}
-            <div className="current-chord__meter" aria-label="Recognition confidence 96%">
-              <span style={{ width: "96%" }} />
-            </div>
-            <small>96% confident</small>
+            {confidence !== undefined && (
+              <>
+                <div className="current-chord__meter" aria-label={`Recognition confidence ${Math.round(confidence * 100)}%`}>
+                  <span style={{ width: `${confidence * 100}%` }} />
+                </div>
+                <small>{Math.round(confidence * 100)}% confident</small>
+              </>
+            )}
           </>
         ) : (
           <>
             <strong>—</strong>
-            <p>Play one clean chord and let it ring.</p>
+            <p>{inputMode === "manual" ? "Pick a chord below to begin." : "Play one clean chord and let it ring."}</p>
           </>
         )}
       </div>
@@ -1141,6 +1150,12 @@ function HarmonicCompass({
               ) : null}
             </div>
             <div className="voicing-explorer__actions">
+              <button
+                className="primary-button"
+                onClick={() => onAddSuggestion(activeSuggestion)}
+              >
+                <Plus size={14} /> Add to progression
+              </button>
               <button
                 className="secondary-button"
                 onClick={() => onUseVoicing(activeChord, activeVoicing)}
@@ -1233,6 +1248,7 @@ function SessionControls({
   setAssistance,
   currentChord,
   setCurrentChordName,
+  openManualOnStart = false,
 }: {
   inputMode: InputMode;
   setInputMode: (mode: InputMode) => void;
@@ -1241,8 +1257,9 @@ function SessionControls({
   setAssistance: (level: AssistanceLevel) => void;
   currentChord: ProgressionChord | null;
   setCurrentChordName: (name: string) => void;
+  openManualOnStart?: boolean;
 }) {
-  const [manualOpen, setManualOpen] = useState(false);
+  const [manualOpen, setManualOpen] = useState(openManualOnStart);
   return (
     <div className="session-controls">
       <div className="signal-control">
@@ -1260,7 +1277,9 @@ function SessionControls({
             ? "Start listening"
             : listeningState === "requesting"
               ? "Requesting microphone…"
-              : "Pause"}
+              : inputMode === "manual"
+                ? "Stop manual input"
+                : "Pause demo"}
         </button>
         <span
           className={`signal-control__level ${inputMode !== "idle" ? "is-active" : ""}`}
@@ -1643,6 +1662,25 @@ function PlaySpace({
           ? (capturedProgression[Math.min(activeIndex, capturedProgression.length - 1)] ?? null)
           : null;
   const suggestions = currentChord ? (chordMap[currentChord.name] ?? defaultSuggestions) : [];
+  const appendChord = (name: string, numeral: string, voicing?: GuitarVoicing) => {
+    setManualChord(name);
+    setInputMode("manual");
+    setSelectedSuggestion(null);
+    setCapturedProgression((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        name,
+        numeral,
+        beats: 4,
+        ...(voicing
+          ? { voicing, tuning: tuningId, capo }
+          : {}),
+      },
+    ]);
+  };
+  const addSuggestion = (suggestion: Suggestion) =>
+    appendChord(suggestion.chord, suggestion.numeral);
 
   useEffect(
     () => () => {
@@ -1683,7 +1721,13 @@ function PlaySpace({
     <div className="play-space">
       <WorkspaceHeader
         title="Play"
-        subtitle="Idea 07 · autosaved"
+        subtitle={
+          inputMode === "demo"
+            ? "Guided example · simulated audio"
+            : capturedProgression.length > 0
+              ? "Untitled idea · autosaved"
+              : "New session"
+        }
         onMenu={onMenu}
         onMentor={onMentor}
         onProfile={onProfile}
@@ -1692,13 +1736,17 @@ function PlaySpace({
         <div className="key-status">
           <span>LIKELY KEY</span>
           <strong>
-            {inputMode === "demo" || currentChord ? "C major" : "Waiting for a chord"}
+            {inputMode === "demo"
+              ? "C major"
+              : currentChord
+                ? "Key pending"
+                : "Waiting for a chord"}
           </strong>
-          <em>{inputMode === "demo" || currentChord ? "87%" : "—"}</em>
+          <em>{inputMode === "demo" ? "87%" : "—"}</em>
         </div>
         <div className="tempo-status">
           <Gauge size={15} />
-          <strong>{inputMode === "demo" || currentChord ? "96" : "—"}</strong>
+          <strong>{inputMode === "demo" ? "96" : "—"}</strong>
           <span>BPM</span>
           <i />
           <span>4/4</span>
@@ -1751,6 +1799,7 @@ function PlaySpace({
         assistance={assistance}
         setAssistance={setAssistance}
         currentChord={currentChord}
+        openManualOnStart={inputMode === "manual" && !currentChord && capturedProgression.length === 0}
         setCurrentChordName={(name) => {
           setManualChord(name);
           setSelectedSuggestion(null);
@@ -1843,22 +1892,11 @@ function PlaySpace({
             tuningId={tuningId}
             capo={capo}
             previousVoicing={capturedProgression.at(-1)?.voicing}
-            onUseVoicing={(name, voicing) => {
-              setManualChord(name);
-              setInputMode("manual");
-              setCapturedProgression((current) => [
-                ...current,
-                {
-                  id: crypto.randomUUID(),
-                  name,
-                  numeral: name.includes("m") ? "vi" : "I",
-                  beats: 4,
-                  voicing,
-                  tuning: tuningId,
-                  capo,
-                },
-              ]);
-            }}
+            confidence={inputMode === "demo" ? 0.87 : inputMode === "listening" ? 0.96 : undefined}
+            onAddSuggestion={addSuggestion}
+            onUseVoicing={(name, voicing) =>
+              appendChord(name, name.includes("m") ? "vi" : "I", voicing)
+            }
           />
           <div className="compass-legend">
             <span>
@@ -2002,18 +2040,28 @@ function BuildSpace({
   const [looping, setLooping] = useState(false);
   const [playbackScope, setPlaybackScope] = useState<"section" | "song">("section");
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [songTitle, setSongTitle] = useState(sessionMode ? "Untitled idea" : "Borrowed Light");
+  const [editingTitle, setEditingTitle] = useState(false);
   const [feedback, setFeedback] = useState("Ready to shape your song.");
   const [songMenuOpen, setSongMenuOpen] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [undoHistory, setUndoHistory] = useState<BuildSection[][]>([]);
   const [redoHistory, setRedoHistory] = useState<BuildSection[][]>([]);
   const previewRef = useRef<ChordPreviewPlayer | null>(null);
   const loopTimerRef = useRef<number | null>(null);
   const section = sections[activeSection] ?? sections[0]!;
+  const totalBeats = sections.reduce(
+    (sum, item) => sum + item.chords.reduce((sectionSum, chord) => sectionSum + chord.beats, 0),
+    0,
+  );
+  const estimatedSeconds = Math.max(1, Math.round((totalBeats / 96) * 60));
+  const sectionSeconds = Math.max(1, Math.round((section.chords.reduce((sum, chord) => sum + chord.beats, 0) / 96) * 60));
+  const formatDuration = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 
   const chordNameForVariation = (chord: ProgressionChord, index: number) =>
-    variation === "B" && index === 2 ? "Em" : chord.name;
+    variation === "B" && index === 2 && chord.name === "Am" ? "Em" : chord.name;
   const numeralForVariation = (chord: ProgressionChord, index: number) =>
-    variation === "B" && index === 2 ? "iii" : chord.numeral;
+    variation === "B" && index === 2 && chord.name === "Am" ? "iii" : chord.numeral;
 
   const commitSections = (next: BuildSection[], message: string) => {
     setUndoHistory((current) => [...current.slice(-19), sections]);
@@ -2085,7 +2133,7 @@ function BuildSpace({
     setActiveSection(activeSection + 1);
   };
 
-  const deleteSection = () => {
+  const performDeleteSection = () => {
     if (sections.length === 1) {
       setFeedback("A song needs at least one section.");
       return;
@@ -2094,6 +2142,10 @@ function BuildSpace({
     commitSections(next, `${section.name} removed.`);
     setActiveSection(Math.max(0, activeSection - 1));
   };
+  const deleteSection = () => {
+    if (sections.length > 1) setDeleteConfirmOpen(true);
+    else setFeedback("A song needs at least one section.");
+  };
 
   const addChord = () => {
     const options = [
@@ -2101,6 +2153,10 @@ function BuildSpace({
       { name: "G", numeral: "V" },
       { name: "Am", numeral: "vi" },
       { name: "F", numeral: "IV" },
+      { name: "Dm", numeral: "ii" },
+      { name: "Em", numeral: "iii" },
+      { name: "E7", numeral: "V/vi" },
+      { name: "Fm", numeral: "iv" },
     ];
     const option = options[section.chords.length % options.length]!;
     updateActiveChords(
@@ -2136,7 +2192,7 @@ function BuildSpace({
         const userSong: SongDocument = {
           id: crypto.randomUUID(),
           schemaVersion: 1,
-          title: "Your first idea",
+          title: songTitle,
           status: "idea",
           bpm: 96,
           key: {
@@ -2254,7 +2310,7 @@ function BuildSpace({
     <div className="build-space">
       <WorkspaceHeader
         title="Build"
-        subtitle={sessionMode ? "Your idea · saved locally" : "Borrowed Light · saved locally"}
+        subtitle={`${songTitle} · saved locally`}
         onMenu={onMenu}
         onMentor={onMentor}
         onProfile={onProfile}
@@ -2263,7 +2319,24 @@ function BuildSpace({
         <header className="build-toolbar">
           <div className="song-title-control">
             <span className="section-kicker">SONG WORKSPACE</span>
-            <h1>{sessionMode ? "Your first idea" : "Borrowed Light"}</h1>
+            {editingTitle ? (
+              <input
+                autoFocus
+                className="song-title-input"
+                value={songTitle}
+                maxLength={80}
+                onChange={(event) => setSongTitle(event.target.value)}
+                onBlur={() => setEditingTitle(false)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") setEditingTitle(false);
+                }}
+                aria-label="Song title"
+              />
+            ) : (
+              <button className="song-title-button" onClick={() => setEditingTitle(true)}>
+                <h1>{songTitle}</h1>
+              </button>
+            )}
             <button
               className="title-menu"
               aria-label="Song options"
@@ -2281,7 +2354,7 @@ function BuildSpace({
                   role="menuitem"
                   onClick={() => {
                     setSongMenuOpen(false);
-                    setFeedback("Borrowed Light is stored on this device and ready offline.");
+                    setFeedback(`${songTitle} is stored on this device and ready offline.`);
                   }}
                 >
                   <Lock size={14} /> Storage details
@@ -2346,7 +2419,7 @@ function BuildSpace({
               <span className="section-kicker">ARRANGEMENT</span>
               <h2 id="song-map-heading">Song map</h2>
             </div>
-            <span>{sections.length} sections · 2:48 estimated</span>
+            <span>{sections.length} sections · {formatDuration(estimatedSeconds)} estimated</span>
           </div>
           <div className="section-tabs" role="tablist" aria-label="Song sections">
             {sections.map((item, index) => (
@@ -2470,7 +2543,7 @@ function BuildSpace({
             <div className="section-transport__line">
               <i style={{ width: playing ? "42%" : "0%" }} />
             </div>
-            <span>00:20</span>
+            <span>{formatDuration(sectionSeconds)}</span>
             <button
               className={`loop-button ${looping ? "is-active" : ""}`}
               aria-pressed={looping}
@@ -2514,10 +2587,43 @@ function BuildSpace({
             </div>
             <div>
               <span>Band</span>
-              <strong>Open Road</strong>
+              <strong>{sessionMode ? "No band" : "Open Road"}</strong>
             </div>
           </div>
         </section>
+      {deleteConfirmOpen && (
+        <>
+          <button
+            className="confirm-scrim"
+            aria-label="Close delete confirmation"
+            onClick={() => setDeleteConfirmOpen(false)}
+          />
+          <div
+            className="confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-section-title"
+          >
+            <span className="section-kicker">REMOVE SECTION</span>
+            <h2 id="delete-section-title">Delete {section.name}?</h2>
+            <p>This section and its chords will be removed from this idea.</p>
+            <div className="confirm-dialog__actions">
+              <button className="secondary-button" onClick={() => setDeleteConfirmOpen(false)}>
+                Keep section
+              </button>
+              <button
+                className="danger-button"
+                onClick={() => {
+                  performDeleteSection();
+                  setDeleteConfirmOpen(false);
+                }}
+              >
+                Delete section
+              </button>
+            </div>
+          </div>
+        </>
+      )}
       </main>
     </div>
   );
@@ -2532,11 +2638,13 @@ function GrowSpace({
   onMentor,
   onMenu,
   onProfile,
+  onStartPlay,
   hasSessionHistory,
 }: {
   onMentor: () => void;
   onMenu: () => void;
   onProfile: () => void;
+  onStartPlay: () => void;
   hasSessionHistory: boolean;
 }) {
   const [started, setStarted] = useState(false);
@@ -2605,7 +2713,16 @@ function GrowSpace({
             </div>
             <span className="difficulty">EAR · DEVELOPING</span>
           </header>
-          {!started ? (
+          {!hasSessionHistory ? (
+            <div className="challenge-empty">
+              <Sparkles size={22} />
+              <h3>Your first challenge is waiting.</h3>
+              <p>Start a small idea in Play and Grow will turn one of your own chord moves into practice.</p>
+              <button className="primary-button" onClick={onStartPlay}>
+                <Play size={15} fill="currentColor" /> Make an idea
+              </button>
+            </div>
+          ) : !started ? (
             <>
               <div className="challenge-visual" aria-hidden="true">
                 <div className="challenge-visual__rings" />
@@ -2678,7 +2795,7 @@ function GrowSpace({
                     </strong>
                     <p>
                       {answer === "C"
-                        ? "Fm → C is the minor iv resolving to I—the bittersweet turn from your song Borrowed Light."
+                        ? "Fm → C is the minor iv resolving to I—a bittersweet turn that brings the harmony home."
                         : "Try replaying it and notice which option removes all the tension."}
                     </p>
                   </div>
@@ -2729,11 +2846,13 @@ interface LibraryItem {
   date: string;
   favorite: boolean;
   color: "lime" | "sand" | "blue" | "plum";
+  example: boolean;
 }
 
 const libraryItems: LibraryItem[] = [
   {
     id: "l1",
+    example: true,
     title: "Borrowed Light",
     type: "Song",
     key: "C major",
@@ -2745,6 +2864,7 @@ const libraryItems: LibraryItem[] = [
   },
   {
     id: "l2",
+    example: true,
     title: "Open Road",
     type: "Song",
     key: "G major",
@@ -2756,6 +2876,7 @@ const libraryItems: LibraryItem[] = [
   },
   {
     id: "l3",
+    example: true,
     title: "Blue Hour",
     type: "Idea",
     key: "D minor",
@@ -2767,6 +2888,7 @@ const libraryItems: LibraryItem[] = [
   },
   {
     id: "l4",
+    example: true,
     title: "Late Window",
     type: "Session",
     key: "A minor",
@@ -2796,9 +2918,10 @@ function mapStoredSongs(songs: SongDocument[]): LibraryItem[] {
     const keyName = primary
       ? `${formatChord({ root: primary.tonic, quality: "major" })} ${primary.mode}`
       : "Key open";
-    const favorite = song.title === "Borrowed Light" || song.title === "Blue Hour";
+    const favorite = song.tags.includes("favorite");
     return {
       id: song.id,
+      example: song.tags.includes("example"),
       title: song.title,
       type: song.title === "Blue Hour" ? "Idea" : "Song",
       key: keyName,
@@ -2816,20 +2939,24 @@ function mapStoredSongs(songs: SongDocument[]): LibraryItem[] {
 function LibrarySpace({
   onMentor,
   onResume,
+  onNewIdea,
   onMenu,
   onProfile,
+  showcaseMode = false,
 }: {
   onMentor: () => void;
-  onResume: () => void;
+  onResume: (progression: ProgressionChord[]) => void;
+  onNewIdea: () => void;
   onMenu: () => void;
   onProfile: () => void;
+  showcaseMode?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("All");
   const [sortMode, setSortMode] = useState<"updated" | "name">("updated");
-  const [items, setItems] = useState<LibraryItem[]>(libraryItems);
+  const [items, setItems] = useState<LibraryItem[]>(showcaseMode ? libraryItems : []);
   const [favorites, setFavorites] = useState(
-    () => new Set(libraryItems.filter((item) => item.favorite).map((item) => item.id)),
+    () => new Set((showcaseMode ? libraryItems : []).filter((item) => item.favorite).map((item) => item.id)),
   );
   const [importState, setImportState] = useState("Archives stay on this device.");
   const [selectedItem, setSelectedItem] = useState<string | null>(null);
@@ -2842,12 +2969,14 @@ function LibrarySpace({
     void (async () => {
       try {
         const database = getDatabase();
-        await ensureSeeded(database);
-        const songs = await database.songs.orderBy("updatedAt").reverse().toArray();
-        const mapped = mapStoredSongs(songs);
-        if (active && mapped.length > 0) {
-          setItems(mapped);
-          setFavorites(new Set(mapped.filter((item) => item.favorite).map((item) => item.id)));
+        if (!showcaseMode) {
+          await ensureInitialized(database);
+          const songs = await database.songs.orderBy("updatedAt").reverse().toArray();
+          const mapped = mapStoredSongs(songs).filter((item) => !item.example);
+          if (active) {
+            setItems(mapped);
+            setFavorites(new Set(mapped.filter((item) => item.favorite).map((item) => item.id)));
+          }
         }
       } catch {
         // IndexedDB can be unavailable in strict private modes; showcase seeds remain usable.
@@ -2857,7 +2986,7 @@ function LibrarySpace({
       active = false;
       void previewRef.current?.stop();
     };
-  }, []);
+  }, [showcaseMode]);
 
   const filtered = items
     .filter(
@@ -2868,12 +2997,24 @@ function LibrarySpace({
     .toSorted((a, b) => (sortMode === "name" ? a.title.localeCompare(b.title) : 0));
 
   const toggleFavorite = (id: string) => {
+    const nextFavorite = !favorites.has(id);
     setFavorites((current) => {
       const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (nextFavorite) next.add(id);
+      else next.delete(id);
       return next;
     });
+    if (!showcaseMode) {
+      void (async () => {
+        const database = getDatabase();
+        const song = await database.songs.get(id);
+        if (!song) return;
+        const tags = nextFavorite
+          ? Array.from(new Set([...song.tags, "favorite"]))
+          : song.tags.filter((tag) => tag !== "favorite");
+        await saveSong({ ...song, tags }, database);
+      })();
+    }
   };
 
   const handleImport = async (file: File | undefined) => {
@@ -2882,7 +3023,7 @@ function LibrarySpace({
     try {
       const result = await importLibrary(new Uint8Array(await file.arrayBuffer()));
       const songs = await getDatabase().songs.orderBy("updatedAt").reverse().toArray();
-      const mapped = mapStoredSongs(songs);
+      const mapped = mapStoredSongs(songs).filter((item) => showcaseMode || !item.example);
       setItems(mapped);
       setFavorites(new Set(mapped.filter((item) => item.favorite).map((item) => item.id)));
       setImportState(
@@ -2900,6 +3041,13 @@ function LibrarySpace({
     await previewRef.current.previewGuitarRoute(item.chords, item.bpm, "strum");
     setImportState(`Playing ${item.title} as a guitar progression.`);
   };
+  const progressionForItem = (item: LibraryItem): ProgressionChord[] =>
+    item.chords.map((name, index) => ({
+      id: `${item.id}-${index}`,
+      name,
+      numeral: name.endsWith("m") ? "vi" : index === 0 ? "I" : "V",
+      beats: 4,
+    }));
   return (
     <div className="library-space">
       <WorkspaceHeader
@@ -2927,7 +3075,7 @@ function LibrarySpace({
               accept=".zip,.hcompass.zip,application/zip"
               onChange={(event) => void handleImport(event.target.files?.[0])}
             />
-            <button className="primary-button" onClick={onResume}>
+            <button className="primary-button" onClick={onNewIdea}>
               <Plus size={15} /> New idea
             </button>
           </div>
@@ -2964,7 +3112,7 @@ function LibrarySpace({
           <button
             className="sort-button"
             onClick={() => setSortMode((current) => (current === "updated" ? "name" : "updated"))}
-            aria-label={`Sort by ${sortMode === "updated" ? "name" : "last updated"}`}
+            aria-label={`Sort by ${sortMode === "updated" ? "last updated" : "name"}`}
           >
             {sortMode === "updated" ? "Last updated" : "Name"} <ChevronDown size={14} />
           </button>
@@ -3005,7 +3153,7 @@ function LibrarySpace({
                 >
                   <Star size={16} fill={favorites.has(item.id) ? "currentColor" : "none"} />
                 </button>
-                <button className="resume-button" onClick={onResume}>
+                <button className="resume-button" onClick={() => onResume(progressionForItem(item))}>
                   Resume <ArrowRight size={14} />
                 </button>
                 <button
@@ -3024,7 +3172,7 @@ function LibrarySpace({
                   <button onClick={() => void previewItem(item)}>
                     <Volume2 size={14} /> Preview guitar
                   </button>
-                  <button onClick={onResume}>
+                  <button onClick={() => onResume(progressionForItem(item))}>
                     <ListMusic size={14} /> Open in Build
                   </button>
                 </div>
@@ -3034,8 +3182,17 @@ function LibrarySpace({
           {filtered.length === 0 && (
             <div className="library-empty">
               <Search size={24} />
-              <strong>No ideas found</strong>
-              <p>Try another search or filter.</p>
+              <strong>{items.length === 0 ? "Your library is empty" : "No ideas found"}</strong>
+              <p>
+                {items.length === 0
+                  ? "Capture a progression in Play and it will appear here automatically."
+                  : "Try another search or filter."}
+              </p>
+              {items.length === 0 && (
+                <button className="primary-button" onClick={onNewIdea}>
+                  <Plus size={15} /> Start in Play
+                </button>
+              )}
             </div>
           )}
         </section>
@@ -3096,7 +3253,12 @@ function UtilityDrawer({
   return (
     <>
       <button className="utility-scrim" aria-label={`Close ${panel}`} onClick={onClose} />
-      <aside className="utility-drawer" aria-label={settings ? "Settings" : "Player profile"}>
+      <aside
+        className="utility-drawer"
+        aria-label={settings ? "Settings" : "Player profile"}
+        role="dialog"
+        aria-modal="true"
+      >
         <header>
           <span>{settings ? <Settings2 size={18} /> : <Guitar size={18} />}</span>
           <div>
@@ -3202,10 +3364,12 @@ function MentorDrawer({
   open,
   onClose,
   currentChord = "C",
+  progression = [],
 }: {
   open: boolean;
   onClose: () => void;
   currentChord?: string;
+  progression?: string[];
 }) {
   const [question, setQuestion] = useState("");
   const [isThinking, setIsThinking] = useState(false);
@@ -3231,6 +3395,8 @@ function MentorDrawer({
           ? "explain"
           : "teach";
     const key = { tonic: 0, mode: "major" as const, confidence: 0.87 };
+    const currentSymbol = parseChordName(currentChord);
+    const progressionSymbols = progression.length ? progression.map(parseChordName) : [currentSymbol];
     setMessages((current) => [...current, { source: "user", text: cleanQuestion }]);
     setQuestion("");
     setIsThinking(true);
@@ -3243,11 +3409,11 @@ function MentorDrawer({
           question: cleanQuestion,
           intent,
           context: {
-            currentChord: { root: 0, quality: "major" },
+            currentChord: currentSymbol,
             key,
-            progression: SHOWCASE_PROGRESSION,
+            progression: progressionSymbols,
             assistanceLevel: "developing",
-            allowedSuggestions: getSuggestions({ root: 0, quality: "major" }, key),
+            allowedSuggestions: getSuggestions(currentSymbol, key),
           },
         }),
       });
@@ -3277,6 +3443,8 @@ function MentorDrawer({
       />
       <aside
         className={`mentor-drawer ${open ? "is-open" : ""}`}
+        role="dialog"
+        aria-modal="true"
         aria-hidden={!open}
         aria-label="Compass mentor"
       >
@@ -3500,6 +3668,7 @@ export function HarmonicCompassApp({ initialShowcase = false }: { initialShowcas
             onMentor={() => setMentorOpen(true)}
             onMenu={() => setMobileOpen(true)}
             onProfile={() => setUtilityPanel("profile")}
+            onStartPlay={() => setActiveSpace("play")}
             hasSessionHistory={sessionProgression.length > 0}
           />
         )}
@@ -3508,11 +3677,28 @@ export function HarmonicCompassApp({ initialShowcase = false }: { initialShowcas
             onMentor={() => setMentorOpen(true)}
             onMenu={() => setMobileOpen(true)}
             onProfile={() => setUtilityPanel("profile")}
-            onResume={() => setActiveSpace("build")}
+            showcaseMode={initialShowcase}
+            onNewIdea={() => {
+              setSessionProgression([]);
+              setBuildSections(null);
+              setEntered(true);
+              changeInputMode("manual");
+              setActiveSpace("play");
+            }}
+            onResume={(progression) => {
+              setSessionProgression(progression);
+              setBuildSections(buildSectionsForProgression(progression));
+              setActiveSpace("build");
+            }}
           />
         )}
       </div>
-      <MentorDrawer open={mentorOpen} onClose={() => setMentorOpen(false)} />
+      <MentorDrawer
+        open={mentorOpen}
+        onClose={() => setMentorOpen(false)}
+        currentChord={sessionProgression.at(-1)?.name ?? liveChord ?? "C"}
+        progression={sessionProgression.map((chord) => chord.name)}
+      />
       <UtilityDrawer
         panel={utilityPanel}
         onClose={() => setUtilityPanel(null)}

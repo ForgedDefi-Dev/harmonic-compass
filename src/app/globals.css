@@ -15,6 +15,10 @@
   --signal-faint: rgba(200, 255, 90, 0.055);
   --warning: #f1b95b;
   --danger: #ff6d6a;
+  --signal-dim: #8cae3f;
+  --line-strong: var(--line-bright);
+  --panel: var(--surface);
+  --panel-raised: var(--surface-strong);
   --shadow: 0 32px 80px rgba(0, 0, 0, 0.38);
   --font-ui: "Instrument Sans Variable", "Aptos", "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
@@ -4362,5 +4366,130 @@ a {
   }
   .suggestion-inspector__playback {
     grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* Beta hardening: make state-changing controls and sheets explicit. */
+.song-title-button {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: text;
+}
+.song-title-button h1 {
+  margin: 0;
+}
+.song-title-button:hover h1,
+.song-title-button:focus-visible h1 {
+  color: var(--signal);
+}
+.song-title-input {
+  width: min(34rem, 70vw);
+  padding: 0.15rem 0.35rem;
+  border: 1px solid var(--signal-dim);
+  border-radius: 0.35rem;
+  background: var(--panel);
+  color: var(--ivory);
+  font: inherit;
+  font-weight: 600;
+}
+.confirm-scrim {
+  position: fixed;
+  z-index: 90;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: rgb(3 12 11 / 68%);
+}
+.confirm-dialog {
+  position: fixed;
+  z-index: 91;
+  top: 50%;
+  left: 50%;
+  width: min(28rem, calc(100vw - 2rem));
+  padding: 1.25rem;
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--line-strong);
+  border-radius: 0.8rem;
+  background: var(--panel-raised);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 42%);
+}
+.confirm-dialog h2 {
+  margin: 0.3rem 0 0.45rem;
+}
+.confirm-dialog p {
+  margin: 0;
+  color: var(--muted);
+}
+.confirm-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  margin-top: 1.1rem;
+}
+.danger-button {
+  padding: 0.65rem 0.85rem;
+  border: 1px solid rgb(255 131 131 / 42%);
+  border-radius: 0.45rem;
+  background: rgb(151 42 42 / 24%);
+  color: #ffb7b7;
+  font: inherit;
+  cursor: pointer;
+}
+.danger-button:hover,
+.danger-button:focus-visible {
+  background: rgb(171 48 48 / 42%);
+}
+@media (max-width: 820px) {
+  .song-title-input {
+    width: min(70vw, 18rem);
+  }
+  .confirm-dialog {
+    top: auto;
+    bottom: 0;
+    width: 100%;
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 1rem 1rem 0 0;
+    transform: none;
+  }
+  .confirm-dialog__actions {
+    flex-direction: column-reverse;
+  }
+  .confirm-dialog__actions button {
+    width: 100%;
+    justify-content: center;
+  }
+  .mentor-drawer,
+  .utility-drawer {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    max-height: min(92dvh, 760px);
+    border-top: 1px solid var(--line-strong);
+    border-right: 0;
+    border-radius: 1rem 1rem 0 0;
+  }
+  .suggestion-inspector,
+  .shape-finder {
+    position: fixed;
+    z-index: 55;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    max-height: min(88dvh, 720px);
+    margin: 0;
+    overflow-y: auto;
+    border-right: 0;
+    border-left: 0;
+    border-radius: 1rem 1rem 0 0;
+    box-shadow: 0 -18px 52px rgb(0 0 0 / 35%);
   }
 }
